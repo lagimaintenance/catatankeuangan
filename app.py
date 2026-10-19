@@ -6,21 +6,196 @@ import re
 import datetime
 import os
 import shutil
-import zipfile
+import altair as alt
 
-st.set_page_config(page_title="Dashboard Catatan Keuangan", page_icon="💰", layout="wide")
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="Dashboard Keuangan", layout="wide")
 
-st.title("💰 Dashboard & Pemroses Catatan Keuangan Otomatis")
-st.markdown("Upload e-statement Bank BCA dan Kartu Kredit, sistem akan otomatis membersihkan, mengkategorikan, dan menghasilkan file `.ckbak` siap restore.")
+# --- STATE MANAGEMENT UNTUK THEME ---
+if 'theme' not in st.session_state:
+    st.session_state.theme = 'Light'
 
-# Sidebar untuk Input
-st.sidebar.header("🔑 Pengaturan")
-pdf_password = st.sidebar.text_input("Password PDF (Tanggal Lahir DDMMYYYY)", type="password", value="21062002")
+# --- DYNAMIC CSS & NOTHING AESTHETIC REFINEMENT ---
+if st.session_state.theme == 'Light':
+    bg_color = "#F7F7F8"
+    card_bg = "#FFFFFF"
+    text_color = "#111111"
+    sub_text = "#555555"
+    border_color = "#222222"
+    input_bg = "#FFFFFF"
+    tab_bg = "#EAEAEA"
+    tab_active_bg = "#111111"
+    tab_active_text = "#FFFFFF"
+    tab_inactive_text = "#333333"
+    chart_bg = "#FFFFFF"
+    chart_text = "#333333"
+    chart_grid = "#E5E5E5"
+    shadow_box = "0 4px 12px rgba(0, 0, 0, 0.04)"
+else:
+    bg_color = "#1E1E22"
+    card_bg = "#2A2D32"
+    text_color = "#F5F5F5"
+    sub_text = "#AAAAAA"
+    border_color = "#555555"
+    input_bg = "#22252A"
+    tab_bg = "#22252A"
+    tab_active_bg = "#F5F5F5"
+    tab_active_text = "#1E1E22"
+    tab_inactive_text = "#CCCCCC"
+    chart_bg = "#2A2D32"
+    chart_text = "#CCCCCC"
+    chart_grid = "#3A3D42"
+    shadow_box = "0 4px 12px rgba(0, 0, 0, 0.2)"
 
-uploaded_bank_files = st.sidebar.file_uploader("Upload PDF Rekening Koran BCA (Bisa banyak sekaligus)", type=["pdf"], accept_multiple_files=True)
-uploaded_cc_files = st.sidebar.file_uploader("Upload PDF Kartu Kredit BCA (Bisa banyak sekaligus)", type=["pdf"], accept_multiple_files=True)
+st.markdown(f"""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
 
-# Fungsi Kategori Mapping Sesuai Aturan Terbaru
+    .stApp {{
+        background-color: {bg_color};
+        color: {text_color};
+        font-family: 'Montserrat', sans-serif !important;
+        font-size: 0.9rem;
+    }}
+    
+    h1 {{
+        text-align: center;
+        color: {text_color};
+        font-family: 'Montserrat', sans-serif !important;
+        font-weight: 700;
+        font-size: 1.8rem;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+    }}
+    
+    h3 {{
+        text-align: center;
+        color: {text_color};
+        font-family: 'Montserrat', sans-serif !important;
+        font-weight: 600;
+        font-size: 1.3rem;
+    }}
+
+    h4 {{
+        text-align: center;
+        color: {text_color};
+        font-family: 'Montserrat', sans-serif !important;
+        font-weight: 600;
+        font-size: 1.1rem;
+    }}
+    
+    p, span, label, .stMarkdown {{
+        color: {text_color} !important;
+        font-family: 'Montserrat', sans-serif !important;
+        font-size: 0.85rem;
+    }}
+    
+    div[data-testid="stMetric"] {{
+        background-color: {card_bg};
+        border: 1px solid {border_color};
+        padding: 12px;
+        border-radius: 4px;
+        box-shadow: {shadow_box};
+    }}
+    div[data-testid="stMetricValue"] {{
+        font-size: 1.5rem;
+        color: {text_color};
+        font-weight: 700;
+    }}
+    div[data-testid="stMetricLabel"] {{
+        color: {sub_text};
+        text-transform: uppercase;
+        font-size: 0.75rem;
+    }}
+    
+    .stTabs [data-baseweb="tab-list"] {{
+        justify-content: center;
+        gap: 4px;
+        background-color: {tab_bg};
+        padding: 4px;
+        border: 1px solid {border_color};
+        border-radius: 4px;
+        max-width: 600px;
+        margin: 0 auto;
+    }}
+    .stTabs [data-baseweb="tab"] {{
+        background-color: transparent !important;
+        border-radius: 2px;
+    }}
+    .stTabs [data-baseweb="tab"] p, 
+    .stTabs [data-baseweb="tab"] span, 
+    .stTabs [data-baseweb="tab"] div {{
+        color: {tab_inactive_text} !important;
+        font-size: 0.8rem !important;
+        font-weight: 600 !important;
+        text-transform: uppercase;
+    }}
+    .stTabs [aria-selected="true"] {{
+        background-color: {tab_active_bg} !important;
+        border-radius: 2px !important;
+    }}
+    .stTabs [aria-selected="true"] p, 
+    .stTabs [aria-selected="true"] span, 
+    .stTabs [aria-selected="true"] div {{
+        color: {tab_active_text} !important;
+        font-weight: 700 !important;
+    }}
+    
+    .stButton button {{
+        background-color: {card_bg};
+        color: {text_color};
+        border: 1px solid {border_color};
+        border-radius: 4px;
+        font-weight: 600;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        box-shadow: {shadow_box};
+    }}
+    .stButton button:hover {{
+        background-color: {text_color};
+        color: {bg_color};
+        border-color: {text_color};
+    }}
+    
+    .stTextInput input, .stSelectbox select {{
+        background-color: {input_bg};
+        color: {text_color};
+        border: 1px solid {border_color};
+        border-radius: 4px;
+        font-size: 0.85rem;
+    }}
+
+    /* FIX FILE UPLOADER BACKGROUND AGAR MENYESUAIKAN THEME */
+    div[data-testid="stFileUploader"] {{
+        border: 1px solid {border_color};
+        border-radius: 4px;
+        padding: 10px;
+        background-color: {card_bg} !important;
+        box-shadow: {shadow_box};
+    }}
+    div[data-testid="stFileUploader"] section {{
+        background-color: {input_bg} !important;
+        border: 1px dashed {border_color} !important;
+    }}
+
+    hr {{
+        border-color: {border_color};
+    }}
+    </style>
+""", unsafe_allow_html=True)
+
+# --- DATABASE SETUP ---
+BASE_DB = 'CK(18-10-2026-132328).ckbak'
+WORK_DB = 'CK_Working.ckbak'
+
+if not os.path.exists(WORK_DB):
+    if os.path.exists(BASE_DB):
+        shutil.copyfile(BASE_DB, WORK_DB)
+
+def get_connection():
+    return sqlite3.connect(WORK_DB)
+
+# --- HELPER FUNCTIONS ---
 def get_category_id_v2(desc, tx_type):
     d = desc.lower()
     if tx_type == 1: # Income
@@ -72,166 +247,337 @@ def clean_desc_v3(text):
     s = re.sub(r'\s+', ' ', s).strip().lower()
     return s if s else "transaksi bank"
 
-if st.button("🚀 Proses & Generate File .ckbak"):
-    if not os.path.exists('CK(18-10-2026-132328).ckbak'):
-        st.error("File database template `CK(18-10-2026-132328).ckbak` belum dimasukkan ke folder project!")
-    else:
-        with st.spinner("Sedang memproses transaksi dan menerapkan aturan kustom..."):
-            work_db = 'CK_Working.ckbak'
-            shutil.copyfile('CK(18-10-2026-132328).ckbak', work_db)
-            
-            conn = sqlite3.connect(work_db)
-            cursor = conn.cursor()
-            
-            cursor.execute("SELECT MAX(_id) FROM TRANSACT;")
-            next_id = cursor.fetchone()[0] + 1
-            
-            # 1. Proses Rekening Koran Bank
-            if uploaded_bank_files:
-                for uploaded_file in uploaded_bank_files:
-                    temp_pdf_path = f"temp_{uploaded_file.name}"
-                    with open(temp_pdf_path, "wb") as f:
-                        f.write(uploaded_file.getbuffer())
-                        
-                    reader = pypdf.PdfReader(temp_pdf_path)
-                    text_lines = []
-                    for page in reader.pages:
-                        for line in page.extract_text().split('\n'):
-                            l = line.strip()
-                            if not l: continue
-                            if any(b in l for b in ["REKENING TAHAPAN XPRESI", "KCP SUNGKONO", "NO. REKENING", "HALAMAN", "PERIODE", "MATA UANG", "CATATAN:", "SALDO AWAL", "MUTASI CR", "MUTASI DB", "SALDO AKHIR", "KETERANGAN"]): continue
-                            text_lines.append(l)
-                            
-                    blocks, curr = [], []
-                    for l in text_lines:
-                        if re.match(r'^\d{2}/\d{2}\b', l):
-                            if curr: blocks.append(curr)
-                            curr = [l]
-                        else:
-                            if curr: curr.append(l)
-                    if curr: blocks.append(curr)
-                    
-                    for b in blocks:
-                        b_str = " ".join(b)
-                        if "SALDO AWAL" in b_str: continue
-                        m_date = re.match(r'^(\d{2})/(\d{2})', b[0])
-                        if not m_date: continue
-                        day, mon_in_text = int(m_date.group(1)), int(m_date.group(2))
-                        is_db = " DB" in b_str
-                        
-                        # Eliminasi pembayaran CC di bank
-                        if 'kartu kredit' in b_str.lower() or 'bca card' in b_str.lower():
-                            continue
-                            
-                        tx_type = 0 if is_db else 1
-                        matches = []
-                        for m in re.finditer(r'(\d{1,3}(?:[,\.]\d{3})*\.\d{2}|\d+\.\d{2})\s*(DB)?', b_str):
-                            val_str, flag = m.group(1), m.group(2)
-                            if val_str == '00000.00': continue
-                            matches.append((val_str, flag))
-                        if not matches: continue
-                        if is_db:
-                            db_matches = [m for m in matches if m[1] == 'DB']
-                            amount = float(db_matches[0][0].replace(',', '')) if db_matches else float(matches[0][0].replace(',', ''))
-                        else:
-                            amount = [float(m[0].replace(',', '')) for m in matches][0]
-                            
-                        dt = datetime.datetime(2026, mon_in_text, day, 12, 0, 0)
-                        timestamp_ms = int(dt.timestamp() * 1000)
-                        desc = clean_desc_v3(b_str)
-                        cat_id = get_category_id_v2(desc, tx_type)
-                        
-                        cursor.execute("""
-                            INSERT INTO TRANSACT (_id, id_category, desc, type, date, amount)
-                            VALUES (?, ?, ?, ?, ?, ?)
-                        """, (next_id, cat_id, desc, tx_type, timestamp_ms, str(int(round(amount)))))
-                        next_id += 1
-                    os.remove(temp_pdf_path)
+# --- AUTHENTICATION SETUP ---
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
 
-            # 2. Proses Kartu Kredit
-            if uploaded_cc_files:
-                months_map = {'JAN':1, 'FEB':2, 'MAR':3, 'APR':4, 'MEI':5, 'JUN':6, 'JUL':7, 'AUG':8, 'SEP':9, 'OCT':10, 'NOV':11, 'DEC':12, 'AGU':8, 'AGT':8, 'OKT':10, 'NOP':11, 'DES':12}
-                for uploaded_file in uploaded_cc_files:
-                    temp_pdf_path = f"temp_cc_{uploaded_file.name}"
-                    with open(temp_pdf_path, "wb") as f:
-                        f.write(uploaded_file.getbuffer())
-                        
-                    reader = pypdf.PdfReader(temp_pdf_path)
-                    if reader.is_encrypted:
-                        reader.decrypt(pdf_password)
-                        
-                    text = ""
-                    for page in reader.pages: text += page.extract_text() + "\n"
-                    lines = [l.strip() for l in text.split('\n') if l.strip()]
-                    
-                    # Deteksi bulan statement dari nama file atau isi
-                    stmt_month = 5 # default fallback
-                    for line in lines:
-                        if "TANGGAL REKENING" in line:
-                            # parse month if available
-                            pass
+# --- HEADER DENGAN TOMBOL TOGGLE KECIL (HURUF D / L) ---
+col_head1, col_head2 = st.columns([10, 1])
+with col_head2:
+    toggle_label = "D" if st.session_state.theme == 'Light' else "L"
+    if st.button(toggle_label, help="Ganti Tema (Light/Dark)"):
+        st.session_state.theme = 'Dark' if st.session_state.theme == 'Light' else 'Light'
+        st.rerun()
 
-                    for line in lines:
-                        m = re.match(r'^(\d{2})[-/]([A-Z]{3}|\d{2})\s+(\d{2})[-/]([A-Z]{3}|\d{2})\s+(.+)$', line, re.IGNORECASE)
-                        if m:
-                            d1, m1, d2, m2, rest = m.groups()
-                            amt_match = re.search(r'([\d\.]+)(\s+CR)?$', rest)
-                            if amt_match:
-                                amt_str = amt_match.group(1)
-                                is_cr = bool(amt_match.group(2))
-                                desc = rest[:amt_match.start()].strip()
-                                amount = float(amt_str.replace('.', ''))
-                                
-                                d_lower = desc.lower()
-                                if 'cicilan bca ke' in d_lower or 'reversal cicilan' in d_lower or 'pembayaran' in d_lower or 'biaya bunga' in d_lower or 'bunga' in d_lower:
-                                    continue
-                                if is_cr: continue
-                                
-                                month_num = months_map.get(m1.upper(), 5)
-                                day_num = int(d1)
-                                trans_year = 2026
-                                
-                                dt = datetime.datetime(trans_year, month_num, day_num, 12, 0, 0)
-                                timestamp_ms = int(dt.timestamp() * 1000)
-                                cleaned_cc_desc = clean_desc_v3(desc)
-                                cat_id = get_category_id_v2(cleaned_cc_desc, 0)
-                                
-                                cursor.execute("""
-                                    INSERT INTO TRANSACT (_id, id_category, desc, type, date, amount)
-                                    VALUES (?, ?, ?, ?, ?, ?)
-                                """, (next_id, cat_id, cleaned_cc_desc, 0, timestamp_ms, str(int(round(amount)))))
-                                next_id += 1
-                    os.remove(temp_pdf_path)
+st.markdown("<h1>Financial Dashboard</h1>", unsafe_allow_html=True)
+st.markdown(f"<p style='text-align: center; color: {sub_text}; letter-spacing: 2px; font-size: 0.75rem;'>[ SYSTEM ACTIVE // SECURE ENVIRONMENT ]</p>", unsafe_allow_html=True)
+st.write("")
 
-            # Optimasi DB
-            cursor.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'TRANSACT';", (next_id - 1,))
-            conn.commit()
-            cursor.execute("VACUUM;")
-            conn.commit()
-            conn.close()
-            
-            st.success("✨ Berhasil diproses! Silakan download database terbaru di bawah.")
-            
-            # Tampilkan Grafik Ringkasan Pengeluaran per Kategori
-            conn = sqlite3.connect(work_db)
-            df_res = pd.read_sql_query("""
-                SELECT c.NAME as Kategori, SUM(CAST(t.amount AS REAL)) as Total
-                FROM TRANSACT t
-                JOIN CATEGORY c ON t.id_category = c._id
-                WHERE t.type = 0
-                GROUP BY c.NAME
-                ORDER BY Total DESC
-            """, conn)
-            conn.close()
-            
-            st.subheader("📊 Grafik Pengeluaran Berdasarkan Kategori")
-            st.bar_chart(df_res.set_index('Kategori'))
-            
-            # Tombol Download
-            with open(work_db, "rb") as f:
+tab1, tab2, tab3 = st.tabs(["Konversi PDF", "Dashboard", "Investasi"])
+
+# ================= PAGE 1: KONVERSI PDF =================
+with tab1:
+    st.markdown("<h3>Konversi Statement Bank</h3>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.85rem;'>Upload statement untuk memperbarui database secara aman dengan sistem anti-duplikasi.</p>", unsafe_allow_html=True)
+    st.write("")
+    
+    col_p_space1, col_p_main, col_p_space2 = st.columns([1, 2, 1])
+    with col_p_main:
+        pdf_password = st.text_input("Password PDF Kartu Kredit", type="password", value="21062002")
+    
+    st.write("")
+    col1, col2 = st.columns(2)
+    with col1:
+        uploaded_bank_files = st.file_uploader("Rekening Koran BCA (PDF)", type=["pdf"], accept_multiple_files=True)
+    with col2:
+        uploaded_cc_files = st.file_uploader("Statement Kartu Kredit BCA (PDF)", type=["pdf"], accept_multiple_files=True)
+        
+    st.write("")
+    col_b_space1, col_b_main, col_b_space2 = st.columns([1, 2, 1])
+    with col_b_main:
+        process_btn = st.button("Proses & Perbarui Database", type="primary", use_container_width=True)
+
+    if process_btn:
+        if not os.path.exists(WORK_DB):
+            st.error("File database template belum tersedia.")
+        else:
+            with st.spinner("Memproses data..."):
+                conn = get_connection()
+                cursor = conn.cursor()
+                
+                cursor.execute("SELECT MAX(_id) FROM TRANSACT;")
+                res_id = cursor.fetchone()[0]
+                next_id = (res_id or 0) + 1
+                
+                added_count = 0
+                duplicate_count = 0
+                
+                if uploaded_bank_files:
+                    for uploaded_file in uploaded_bank_files:
+                        temp_path = f"temp_{uploaded_file.name}"
+                        with open(temp_path, "wb") as f:
+                            f.write(uploaded_file.getbuffer())
+                            
+                        reader = pypdf.PdfReader(temp_path)
+                        text_lines = []
+                        for page in reader.pages:
+                            for line in page.extract_text().split('\n'):
+                                l = line.strip()
+                                if not l: continue
+                                if any(b in l for b in ["REKENING TAHAPAN XPRESI", "KCP SUNGKONO", "NO. REKENING", "HALAMAN", "PERIODE", "MATA UANG", "CATATAN:", "SALDO AWAL", "MUTASI CR", "MUTASI DB", "SALDO AKHIR", "KETERANGAN"]): continue
+                                text_lines.append(l)
+                                
+                        blocks, curr = [], []
+                        for l in text_lines:
+                            if re.match(r'^\d{2}/\d{2}\b', l):
+                                if curr: blocks.append(curr)
+                                curr = [l]
+                            else:
+                                if curr: curr.append(l)
+                        if curr: blocks.append(curr)
+                        
+                        for b in blocks:
+                            b_str = " ".join(b)
+                            if "SALDO AWAL" in b_str: continue
+                            m_date = re.match(r'^(\d{2})/(\d{2})', b[0])
+                            if not m_date: continue
+                            day, mon_in_text = int(m_date.group(1)), int(m_date.group(2))
+                            is_db = " DB" in b_str
+                            
+                            if 'kartu kredit' in b_str.lower() or 'bca card' in b_str.lower():
+                                continue
+                                
+                            tx_type = 0 if is_db else 1
+                            matches = []
+                            for m in re.finditer(r'(\d{1,3}(?:[,\.]\d{3})*\.\d{2}|\d+\.\d{2})\s*(DB)?', b_str):
+                                val_str, flag = m.group(1), m.group(2)
+                                if val_str == '00000.00': continue
+                                matches.append((val_str, flag))
+                            if not matches: continue
+                            if is_db:
+                                db_matches = [m for m in matches if m[1] == 'DB']
+                                amount = float(db_matches[0][0].replace(',', '')) if db_matches else float(matches[0][0].replace(',', ''))
+                            else:
+                                amount = [float(m[0].replace(',', '')) for m in matches][0]
+                                
+                            dt = datetime.datetime(2026, mon_in_text, day, 12, 0, 0)
+                            timestamp_ms = int(dt.timestamp() * 1000)
+                            desc = clean_desc_v3(b_str)
+                            cat_id = get_category_id_v2(desc, tx_type)
+                            str_amount = str(int(round(amount)))
+                            
+                            cursor.execute("""
+                                SELECT COUNT(*) FROM TRANSACT 
+                                WHERE date = ? AND desc = ? AND amount = ? AND type = ?
+                            """, (timestamp_ms, desc, str_amount, tx_type))
+                            if cursor.fetchone()[0] > 0:
+                                duplicate_count += 1
+                                continue
+                                
+                            cursor.execute("""
+                                INSERT INTO TRANSACT (_id, id_category, desc, type, date, amount)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                            """, (next_id, cat_id, desc, tx_type, timestamp_ms, str_amount))
+                            next_id += 1
+                            added_count += 1
+                        os.remove(temp_path)
+
+                if uploaded_cc_files:
+                    months_map = {'JAN':1, 'FEB':2, 'MAR':3, 'APR':4, 'MEI':5, 'JUN':6, 'JUL':7, 'AUG':8, 'SEP':9, 'OCT':10, 'NOV':11, 'DEC':12, 'AGU':8, 'AGT':8, 'OKT':10, 'NOP':11, 'DES':12}
+                    for uploaded_file in uploaded_cc_files:
+                        temp_path = f"temp_cc_{uploaded_file.name}"
+                        with open(temp_path, "wb") as f:
+                            f.write(uploaded_file.getbuffer())
+                            
+                        reader = pypdf.PdfReader(temp_path)
+                        if reader.is_encrypted: reader.decrypt(pdf_password)
+                        
+                        text = ""
+                        for page in reader.pages: text += page.extract_text() + "\n"
+                        lines = [l.strip() for l in text.split('\n') if l.strip()]
+                        
+                        for line in lines:
+                            m = re.match(r'^(\d{2})[-/]([A-Z]{3}|\d{2})\s+(\d{2})[-/]([A-Z]{3}|\d{2})\s+(.+)$', line, re.IGNORECASE)
+                            if m:
+                                d1, m1, d2, m2, rest = m.groups()
+                                amt_match = re.search(r'([\d\.]+)(\s+CR)?$', rest)
+                                if amt_match:
+                                    amt_str = amt_match.group(1)
+                                    is_cr = bool(amt_match.group(2))
+                                    desc = rest[:amt_match.start()].strip()
+                                    amount = float(amt_str.replace('.', ''))
+                                    
+                                    d_lower = desc.lower()
+                                    if 'cicilan bca ke' in d_lower or 'reversal cicilan' in d_lower or 'pembayaran' in d_lower or 'biaya bunga' in d_lower or 'bunga' in d_lower:
+                                        continue
+                                    if is_cr: continue
+                                    
+                                    month_num = months_map.get(m1.upper(), 5)
+                                    day_num = int(d1)
+                                    dt = datetime.datetime(2026, month_num, day_num, 12, 0, 0)
+                                    timestamp_ms = int(dt.timestamp() * 1000)
+                                    cleaned_cc_desc = clean_desc_v3(desc)
+                                    cat_id = get_category_id_v2(cleaned_cc_desc, 0)
+                                    str_amount = str(int(round(amount)))
+                                    
+                                    cursor.execute("""
+                                        SELECT COUNT(*) FROM TRANSACT 
+                                        WHERE date = ? AND desc = ? AND amount = ? AND type = ?
+                                    """, (timestamp_ms, cleaned_cc_desc, str_amount, 0))
+                                    if cursor.fetchone()[0] > 0:
+                                        duplicate_count += 1
+                                        continue
+                                        
+                                    cursor.execute("""
+                                        INSERT INTO TRANSACT (_id, id_category, desc, type, date, amount)
+                                        VALUES (?, ?, ?, ?, ?, ?)
+                                    """, (next_id, cat_id, cleaned_cc_desc, 0, timestamp_ms, str_amount))
+                                    next_id += 1
+                                    added_count += 1
+                        os.remove(temp_path)
+
+                cursor.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'TRANSACT';", (next_id - 1,))
+                conn.commit()
+                cursor.execute("VACUUM;")
+                conn.commit()
+                conn.close()
+                
+                st.success(f"Berhasil menambahkan {added_count} transaksi baru. (Duplikasi diabaikan: {duplicate_count}).")
+
+        if os.path.exists(WORK_DB):
+            with open(WORK_DB, "rb") as f:
                 st.download_button(
-                    label="📥 Download File .ckbak Terbaru",
+                    label="Download Database (.ckbak)",
                     data=f,
                     file_name="CK(18-10-2026-132328).ckbak",
-                    mime="application/octet-stream"
+                    mime="application/octet-stream",
+                    use_container_width=True
                 )
+
+# --- FUNGSI DASHBOARD UTAMA ---
+def render_dashboard():
+    st.markdown("<h3>Analisis Keuangan</h3>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.75rem; letter-spacing: 1px;'>[ METRICS & ANALYTICS INTERFACE ]</p>", unsafe_allow_html=True)
+    st.write("")
+    
+    if os.path.exists(WORK_DB):
+        conn = get_connection()
+        df = pd.read_sql_query("""
+            SELECT t._id, c.NAME as Kategori, t.desc as Deskripsi, t.amount as Jumlah, t.date, t.type
+            FROM TRANSACT t
+            JOIN CATEGORY c ON t.id_category = c._id
+        """, conn)
+        conn.close()
+        
+        if not df.empty:
+            df['datetime'] = pd.to_datetime(df['date'], unit='ms')
+            df['Tahun'] = df['datetime'].dt.year
+            df['Bulan'] = df['datetime'].dt.month
+            df['Jumlah'] = pd.to_numeric(df['Jumlah'])
+            
+            years = sorted(df['Tahun'].unique(), reverse=True)
+            selected_year = st.selectbox("Pilih Tahun", years)
+            
+            df_year = df[df['Tahun'] == selected_year]
+            
+            total_income_yr = df_year[df_year['type'] == 1]['Jumlah'].sum()
+            total_expense_yr = df_year[df_year['type'] == 0]['Jumlah'].sum()
+            
+            col_a, col_b, col_c = st.columns(3)
+            col_a.metric(f"Total Pemasukan ({selected_year})", f"Rp {total_income_yr:,.0f}".replace(",", "."))
+            col_b.metric(f"Total Pengeluaran ({selected_year})", f"Rp {total_expense_yr:,.0f}".replace(",", "."))
+            col_c.metric("Net Cashflow", f"Rp {total_income_yr - total_expense_yr:,.0f}".replace(",", "."))
+            
+            st.divider()
+            
+            months_dict = {1:'Januari', 2:'Februari', 3:'Maret', 4:'April', 5:'Mei', 6:'Juni', 7:'Juli', 8:'Agustus', 9:'September', 10:'Oktober', 11:'November', 12:'Desember'}
+            available_months = sorted(df_year['Bulan'].unique())
+            selected_month = st.selectbox("Pilih Bulan", available_months, format_func=lambda x: months_dict.get(x, str(x)))
+            
+            df_month = df_year[df_year['Bulan'] == selected_month]
+            
+            total_income_mo = df_month[df_month['type'] == 1]['Jumlah'].sum()
+            total_expense_mo = df_month[df_month['type'] == 0]['Jumlah'].sum()
+            
+            st.markdown(f"<h4 style='text-align: center; color: {text_color};'>Periode: {months_dict.get(selected_month)} {selected_year}</h4>", unsafe_allow_html=True)
+            m1, m2 = st.columns(2)
+            m1.metric("Pemasukan Bulan Ini", f"Rp {total_income_mo:,.0f}".replace(",", "."))
+            m2.metric("Pengeluaran Bulan Ini", f"Rp {total_expense_mo:,.0f}".replace(",", "."))
+            
+            df_expense_mo = df_month[df_month['type'] == 0]
+            if not df_expense_mo.empty:
+                st.markdown("<h4>Pengeluaran per Kategori</h4>", unsafe_allow_html=True)
+                cat_summary = df_expense_mo.groupby('Kategori')['Jumlah'].sum().reset_index().sort_values(by='Jumlah', ascending=False)
+                
+                max_val = cat_summary['Jumlah'].max()
+                cat_summary['color_type'] = cat_summary['Jumlah'].apply(lambda x: '#FF3333' if x == max_val else (text_color))
+                
+                chart = alt.Chart(cat_summary).mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2).encode(
+                    x=alt.X('Kategori:N', sort='-y', title=None, axis=alt.Axis(labelAngle=-45, labelColor=chart_text)),
+                    y=alt.Y('Jumlah:Q', title=None, axis=alt.Axis(labelColor=chart_text)),
+                    color=alt.Color('color_type:N', scale=None)
+                ).properties(
+                    height=300,
+                    background=chart_bg
+                ).configure_view(
+                    stroke=None
+                ).configure_axis(
+                    gridColor=chart_grid
+                )
+                
+                st.altair_chart(chart, use_container_width=True)
+                
+                st.markdown("<h4>Rincian Transaksi Pengeluaran</h4>", unsafe_allow_html=True)
+                st.dataframe(df_expense_mo[['datetime', 'Kategori', 'Deskripsi', 'Jumlah']].sort_values(by='datetime', ascending=False), use_container_width=True)
+            else:
+                st.info("Tidak ada data pengeluaran untuk periode ini.")
+        else:
+            st.warning("Database transaksi kosong.")
+    else:
+        st.info("Silakan lakukan konversi file PDF terlebih dahulu.")
+
+# ================= PAGE 2: DASHBOARD (Protected by Password: 355443) =================
+with tab2:
+    if not st.session_state.authenticated:
+        st.markdown("<h3>Automasi Akses Terbatas</h3>", unsafe_allow_html=True)
+        st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.85rem;'>Masukkan password untuk membuka data keuangan.</p>", unsafe_allow_html=True)
+        st.write("")
+        
+        col_p1, col_p2, col_p3 = st.columns([1, 2, 1])
+        with col_p2:
+            pwd_input = st.text_input("Password", type="password", key="dash_pwd")
+            if st.button("Buka Akses", use_container_width=True):
+                if pwd_input == "355443":
+                    st.session_state.authenticated = True
+                    st.rerun()
+                else:
+                    st.error("Password tidak valid.")
+    else:
+        col_k1, col_k2, col_k3 = st.columns([3, 1, 3])
+        with col_k2:
+            if st.button("Kunci Kembali", use_container_width=True, key="lock_dash"):
+                st.session_state.authenticated = False
+                st.rerun()
+        st.write("")
+        render_dashboard()
+
+# ================= PAGE 3: INVESTASI (Protected by Password: 355443) =================
+with tab3:
+    if not st.session_state.authenticated:
+        st.markdown("<h3>Automasi Akses Terbatas</h3>", unsafe_allow_html=True)
+        st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.85rem;'>Masukkan password untuk membuka data portofolio.</p>", unsafe_allow_html=True)
+        st.write("")
+        
+        col_i1, col_i2, col_i3 = st.columns([1, 2, 1])
+        with col_i2:
+            pwd_input_inv = st.text_input("Password", type="password", key="inv_pwd")
+            if st.button("Buka Akses Portofolio", use_container_width=True):
+                if pwd_input_inv == "355443":
+                    st.session_state.authenticated = True
+                    st.rerun()
+                else:
+                    st.error("Password tidak valid.")
+    else:
+        col_k1, col_k2, col_k3 = st.columns([3, 1, 3])
+        with col_k2:
+            if st.button("Kunci Kembali", use_container_width=True, key="lock_inv"):
+                st.session_state.authenticated = False
+                st.rerun()
+        st.write("")
+        st.markdown("<h3>Portofolio Investasi</h3>", unsafe_allow_html=True)
+        st.markdown(f"<p style='text-align: center; color: {sub_text};'>Integrasi Stockbit & Bibit sedang dalam pengembangan.</p>", unsafe_allow_html=True)
+
+# --- COPYRIGHT FOOTER ---
+st.write("")
+st.write("")
+st.markdown(f"<p style='text-align: center; font-size: 0.75rem; color: {sub_text}; letter-spacing: 1px;'>&copy; 2026 rifqihasperi</p>", unsafe_allow_html=True)
