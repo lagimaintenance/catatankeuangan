@@ -15,7 +15,7 @@ st.set_page_config(page_title="Dashboard Keuangan", layout="wide")
 if 'theme' not in st.session_state:
     st.session_state.theme = 'Light'
 
-# --- DYNAMIC CSS & NOTHING AESTHETIC REFINEMENT (MOBILE RESPONSIVE) ---
+# --- DYNAMIC CSS & NOTHING AESTHETIC REFINEMENT (MOBILE & CLOUD READY) ---
 if st.session_state.theme == 'Light':
     bg_color = "#F7F7F8"
     card_bg = "#FFFFFF"
@@ -177,18 +177,19 @@ st.markdown(f"""
         border-color: {border_color};
     }}
 
-    /* OPTIMASI TAMPILAN MOBILE & CLOUD */
     @media (max-width: 768px) {{
         h1 {{ font-size: 1.4rem; }}
         h3 {{ font-size: 1.1rem; }}
+        h4 {{ font-size: 1rem; }}
         .stTabs [data-baseweb="tab-list"] {{
-            flex-wrap: wrap; /* Mencegah tab meluber ke samping di HP */
+            flex-wrap: wrap;
             max-width: 100%;
         }}
         .stTabs [data-baseweb="tab"] p, 
         .stTabs [data-baseweb="tab"] span, 
         .stTabs [data-baseweb="tab"] div {{
             font-size: 0.7rem !important;
+            padding: 4px 8px !important;
         }}
         div[data-testid="stMetricValue"] {{ font-size: 1.2rem; }}
         div[data-testid="stMetricLabel"] {{ font-size: 0.65rem; }}
@@ -196,14 +197,22 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
-# --- DATABASE SETUP (2 DATABASE TERPISAH) ---
+# --- DATABASE SETUP ---
 BASE_DB = 'CK(18-10-2026-132328).ckbak'
-WORK_DB = 'CK_Working.ckbak'  # Khusus Catatan Keuangan 3rd Party
-INV_DB = 'INV_Working.db'     # Khusus Data Investasi
+WORK_DB = 'CK_Working.ckbak'  
+INV_DB = 'INV_Working.db'     
 
-# Copy template awal jika belum ada
 if not os.path.exists(WORK_DB) and os.path.exists(BASE_DB):
     shutil.copyfile(BASE_DB, WORK_DB)
+
+if os.path.exists(WORK_DB):
+    try:
+        rep_conn = sqlite3.connect(WORK_DB)
+        rep_conn.execute("DROP TABLE IF EXISTS STOCK_PORTFOLIO;")
+        rep_conn.commit()
+        rep_conn.close()
+    except:
+        pass
 
 def get_bank_connection():
     return sqlite3.connect(WORK_DB)
@@ -212,6 +221,7 @@ def get_inv_connection():
     conn = sqlite3.connect(INV_DB)
     conn.execute('''CREATE TABLE IF NOT EXISTS STOCK_PORTFOLIO (
         _id INTEGER PRIMARY KEY AUTOINCREMENT,
+        period_str TEXT,
         timestamp INTEGER,
         symbol TEXT,
         qty REAL,
@@ -222,10 +232,34 @@ def get_inv_connection():
         unrealized_rp REAL,
         unrealized_pct REAL
     )''')
-    conn.commit()
+    
+    conn.execute('''CREATE TABLE IF NOT EXISTS STOCK_TRANSACTIONS (
+        _id INTEGER PRIMARY KEY AUTOINCREMENT,
+        period_str TEXT,
+        date_str TEXT,
+        category TEXT,
+        description TEXT,
+        amount REAL
+    )''')
+    
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(STOCK_PORTFOLIO);")
+    columns = [col[1] for col in cursor.fetchall()]
+    if 'period_str' not in columns:
+        cursor.execute("ALTER TABLE STOCK_PORTFOLIO ADD COLUMN period_str TEXT DEFAULT 'Bulan-Unknown';")
+        conn.commit()
+        
     return conn
 
 # --- HELPER FUNCTIONS ---
+def parse_period_name(text):
+    months_map = {'01':'Januari', '02':'Februari', '03':'Maret', '04':'April', '05':'Mei', '06':'Juni', '07':'Juli', '08':'Agustus', '09':'September', '10':'Oktober', '11':'November', '12':'Desember'}
+    m = re.search(r'(\d{2})/(\d{2})/(\d{4})', text)
+    if m:
+        d, month_num, year = m.groups()
+        return f"{months_map.get(month_num, 'Bulan')} {year}"
+    return "Periode Lainnya"
+
 def get_category_id_v2(desc, tx_type):
     d = desc.lower()
     if tx_type == 1: # Income
@@ -298,7 +332,7 @@ tab1, tab2, tab3 = st.tabs(["Konversi PDF", "Dashboard", "Investasi"])
 # ================= PAGE 1: KONVERSI PDF =================
 with tab1:
     st.markdown("<h3>Terminal Input Data</h3>", unsafe_allow_html=True)
-    st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.85rem;'>Upload semua file Statement (BCA / Stockbit) disini. Sistem akan memisahkan database secara otomatis.</p>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.85rem;'>Upload semua file Statement (BCA / Stockbit) disini. Data investasi akan dikelompokkan per bulan secara otomatis.</p>", unsafe_allow_html=True)
     st.write("")
     
     col_p_space1, col_p_main, col_p_space2 = st.columns([1, 2, 1])
@@ -321,9 +355,9 @@ with tab1:
 
     if process_btn:
         with st.spinner("Memproses sinkronisasi data..."):
-            added_count, duplicate_count, stockbit_count = 0, 0, 0
+            added_count, duplicate_count, stockbit_count, stockbit_trx_count = 0, 0, 0, 0
             
-            # --- PROSES REKENING KORAN & CC (DB 1: CK_Working.ckbak) ---
+            # --- PROSES REKENING KORAN & CC ---
             if (uploaded_bank_files or uploaded_cc_files) and not os.path.exists(WORK_DB):
                 st.error("File database template CK belum tersedia.")
             elif uploaded_bank_files or uploaded_cc_files:
@@ -432,16 +466,18 @@ with tab1:
                         os.remove(temp_path)
 
                 cursor.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'TRANSACT';", (next_id - 1,))
+                cursor.execute("PRAGMA journal_mode = DELETE;")
                 conn_bank.commit()
                 cursor.execute("VACUUM;")
+                cursor.execute("REINDEX;")
+                cursor.execute("ANALYZE;")
                 conn_bank.commit()
                 conn_bank.close()
 
-            # --- PROSES PORTFOLIO STOCKBIT (DB 2: INV_Working.db) ---
+            # --- PROSES PORTFOLIO & TRANSAKSI STOCKBIT (PRESISI NOMINAL DIVIDEN & BUY/SELL) ---
             if uploaded_stockbit_files:
                 conn_inv = get_inv_connection()
                 cursor_inv = conn_inv.cursor()
-                cursor_inv.execute("DELETE FROM STOCK_PORTFOLIO") # Reset data lama
                 
                 for uploaded_file in uploaded_stockbit_files:
                     temp_path = f"temp_sb_{uploaded_file.name}"
@@ -451,6 +487,12 @@ with tab1:
                         text = ""
                         for page in reader.pages: text += page.extract_text() + "\n"
                         
+                        period_str = parse_period_name(text)
+                        
+                        cursor_inv.execute("DELETE FROM STOCK_PORTFOLIO WHERE period_str = ?", (period_str,))
+                        cursor_inv.execute("DELETE FROM STOCK_TRANSACTIONS WHERE period_str = ?", (period_str,))
+                        
+                        # 1. PARSER PORTFOLIO STATEMENT (Bagian Bawah)
                         if "PORTFOLIO STATEMENT" in text:
                             port_text = text.split("PORTFOLIO STATEMENT")[1]
                             if "This statement is taken to be correct" in port_text:
@@ -479,10 +521,49 @@ with tab1:
                                     timestamp_ms = int(datetime.datetime.now().timestamp() * 1000)
                                     cursor_inv.execute("""
                                         INSERT INTO STOCK_PORTFOLIO 
-                                        (timestamp, symbol, qty, avg_price, last_price, buy_value, market_value, unrealized_rp, unrealized_pct)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    """, (timestamp_ms, symbol, qty, avg_price, last_price, buy_value, market_value, unrealized_rp, unrealized_pct))
+                                        (period_str, timestamp, symbol, qty, avg_price, last_price, buy_value, market_value, unrealized_rp, unrealized_pct)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """, (period_str, timestamp_ms, symbol, qty, avg_price, last_price, buy_value, market_value, unrealized_rp, unrealized_pct))
                                     stockbit_count += 1
+
+                        # 2. PARSER MUTASI / TRANSAKSI HARIAN (DIVIDEN & BUY/SELL AKURAT)
+                        if "Tr. Date" in text or "Description" in text or "BUY" in text or "SELL" in text:
+                            lines = text.split('\n')
+                            for line in lines:
+                                l = line.strip()
+                                date_match = re.search(r'\b(\d{2}/\d{2}/\d{4})\b', l)
+                                if date_match and any(keyword in l.upper() for keyword in ["BUY", "SELL", "RECEIPT", "WITHDRAWAL", "FEE", "TAX", "DIVIDEND"]):
+                                    date_str = date_match.group(1)
+                                    
+                                    upper_l = l.upper()
+                                    if "BUY" in upper_l:
+                                        cat = "Beli"
+                                    elif "SELL" in upper_l:
+                                        cat = "Jual"
+                                    elif "DIVIDEND" in upper_l or "DIVIDEN" in upper_l:
+                                        cat = "Dividen"
+                                    elif "RECEIPT" in upper_l or "DEBIT" in upper_l or "CREDIT" in upper_l:
+                                        cat = "Mutasi / Kas"
+                                    else:
+                                        cat = "Biaya / Lainnya"
+                                    
+                                    # Kalkulasi akurat lembar x harga atau ambil nominal bersih dividen/transaksi
+                                    qty_price_match = re.search(r'(\d+)\s*@\s*([\d,\.]+)', l)
+                                    if qty_price_match:
+                                        lembar = float(qty_price_match.group(1).replace(',', ''))
+                                        harga = float(qty_price_match.group(2).replace(',', ''))
+                                        amount = lembar * harga
+                                    else:
+                                        amt_matches = re.findall(r'(\d{1,3}(?:,\d{3})*\.\d{2})', l)
+                                        amount = float(amt_matches[-1].replace(',', '')) if amt_matches else 0.0
+                                    
+                                    if amount > 0:
+                                        cursor_inv.execute("""
+                                            INSERT INTO STOCK_TRANSACTIONS (period_str, date_str, category, description, amount)
+                                            VALUES (?, ?, ?, ?, ?)
+                                        """, (period_str, date_str, cat, l, amount))
+                                        stockbit_trx_count += 1
+
                     except Exception as e:
                         st.error(f"Gagal memproses file Stockbit: {e}")
                     finally:
@@ -491,9 +572,8 @@ with tab1:
                 conn_inv.commit()
                 conn_inv.close()
             
-            st.success(f"Sinkronisasi Selesai! | Transaksi Bank: {added_count} (Duplikat {duplicate_count}) | Portofolio Diekstrak: {stockbit_count}")
+            st.success(f"Sinkronisasi Selesai! | Transaksi Bank: {added_count} | Portofolio: {stockbit_count} emiten | Transaksi Harian: {stockbit_trx_count} terekstrak")
 
-    # Area Download Database Terpisah
     st.write("")
     col_dl1, col_dl2 = st.columns(2)
     with col_dl1:
@@ -578,57 +658,85 @@ def render_dashboard():
     else:
         st.info("Silakan lakukan sinkronisasi data di Tab Konversi PDF.")
 
-# --- FUNGSI DASHBOARD INVESTASI (TAB 3) ---
+# --- FUNGSI DASHBOARD INVESTASI (TAB 3 DENGAN SUMMARY P/L & DIVIDEN PRESISI) ---
 def render_investment():
     st.markdown("<h3>Portofolio Investasi</h3>", unsafe_allow_html=True)
-    st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.75rem; letter-spacing: 1px;'>[ ASSET ALLOCATION & PERFORMANCE ]</p>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.75rem; letter-spacing: 1px;'>[ HISTORICAL PERFORMANCE & TRANSACTIONS ]</p>", unsafe_allow_html=True)
     st.write("")
     
     if os.path.exists(INV_DB):
         conn = get_inv_connection()
-        df = pd.read_sql_query("SELECT * FROM STOCK_PORTFOLIO", conn)
+        df_port = pd.read_sql_query("SELECT * FROM STOCK_PORTFOLIO", conn)
+        df_trx = pd.read_sql_query("SELECT * FROM STOCK_TRANSACTIONS", conn)
         conn.close()
         
-        if not df.empty:
-            df_latest = df.sort_values('timestamp').groupby('symbol').tail(1).reset_index(drop=True)
+        if not df_port.empty:
+            periods = sorted(df_port['period_str'].unique(), reverse=True)
+            selected_period = st.selectbox("Pilih Periode Statement Bulanan", periods)
             
-            tot_buy = df_latest['buy_value'].sum()
-            tot_mkt = df_latest['market_value'].sum()
-            tot_unreal = df_latest['unrealized_rp'].sum()
+            df_filtered = df_port[df_port['period_str'] == selected_period].reset_index(drop=True)
+            df_trx_filtered = df_trx[df_trx['period_str'] == selected_period].reset_index(drop=True) if not df_trx.empty else pd.DataFrame()
             
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Total Modal (Buy Value)", f"Rp {tot_buy:,.0f}".replace(",", "."))
-            col2.metric("Total Aset (Market Value)", f"Rp {tot_mkt:,.0f}".replace(",", "."))
-            col3.metric("Total Unrealized P/L", f"Rp {tot_unreal:,.0f}".replace(",", "."))
+            tot_buy = df_filtered['buy_value'].sum()
+            tot_mkt = df_filtered['market_value'].sum()
+            tot_unreal = df_filtered['unrealized_rp'].sum()
+            
+            # Perhitungan presisi total dividen berdasarkan kategori
+            tot_div = 0.0
+            if not df_trx_filtered.empty and 'category' in df_trx_filtered.columns:
+                div_df = df_trx_filtered[df_trx_filtered['category'].str.lower() == 'dividen']
+                tot_div = div_df['amount'].sum() if not div_df.empty else 0.0
+
+            st.write("")
+            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+            col_s1.metric(f"Total Modal", f"Rp {tot_buy:,.0f}".replace(",", "."))
+            col_s2.metric(f"Total Aset", f"Rp {tot_mkt:,.0f}".replace(",", "."))
+            col_s3.metric(f"Unrealized P/L", f"Rp {tot_unreal:,.0f}".replace(",", "."))
+            col_s4.metric(f"Total Dividen", f"Rp {tot_div:,.0f}".replace(",", "."))
             
             st.divider()
             
-            st.markdown("<h4>Alokasi Aset (Market Value)</h4>", unsafe_allow_html=True)
-            chart_donut = alt.Chart(df_latest).mark_arc(innerRadius=60).encode(
-                theta=alt.Theta(field="market_value", type="quantitative"),
-                color=alt.Color(field="symbol", type="nominal", legend=alt.Legend(title="Emiten", labelColor=chart_text, titleColor=chart_text)),
-                tooltip=['symbol', 'market_value', 'unrealized_pct']
-            ).properties(height=350, background=chart_bg).configure_view(stroke=None)
+            sub_tab = st.radio("Pilih Tampilan Dashboard", ["Ringkasan Portofolio", "Rincian Transaksi Harian (Beli/Jual)"], horizontal=True)
+            st.divider()
             
-            st.altair_chart(chart_donut, use_container_width=True)
-            
-            st.markdown("<h4>Rincian Performa per Emiten</h4>", unsafe_allow_html=True)
-            
-            df_display = df_latest[['symbol', 'qty', 'avg_price', 'last_price', 'buy_value', 'market_value', 'unrealized_rp', 'unrealized_pct']].copy()
-            df_display.columns = ['Emiten', 'Lot/Qty', 'Avg Price', 'Last Price', 'Modal (Rp)', 'Market Value (Rp)', 'Unrealized (Rp)', 'Unrealized (%)']
-            
-            format_dict = {
-                'Lot/Qty': '{:,.0f}', 'Avg Price': '{:,.2f}', 'Last Price': '{:,.0f}',
-                'Modal (Rp)': '{:,.0f}', 'Market Value (Rp)': '{:,.0f}',
-                'Unrealized (Rp)': '{:,.0f}', 'Unrealized (%)': '{:,.2f}%'
-            }
-            
-            def color_negative_red(val):
-                if isinstance(val, (int, float)) and val < 0:
-                    return 'color: #FF3333; font-weight: 600;'
-                return f'color: {text_color}'
+            if sub_tab == "Ringkasan Portofolio":
+                st.markdown(f"<h4>Alokasi Aset ({selected_period})</h4>", unsafe_allow_html=True)
+                chart_donut = alt.Chart(df_filtered).mark_arc(innerRadius=60).encode(
+                    theta=alt.Theta(field="market_value", type="quantitative"),
+                    color=alt.Color(field="symbol", type="nominal", legend=alt.Legend(title="Emiten", labelColor=chart_text, titleColor=chart_text)),
+                    tooltip=['symbol', 'market_value', 'unrealized_pct']
+                ).properties(height=350, background=chart_bg).configure_view(stroke=None)
                 
-            st.dataframe(df_display.style.map(color_negative_red, subset=['Unrealized (Rp)', 'Unrealized (%)']).format(format_dict), use_container_width=True)
+                st.altair_chart(chart_donut, use_container_width=True)
+                
+                st.markdown(f"<h4>Rincian Performa per Emiten ({selected_period})</h4>", unsafe_allow_html=True)
+                df_display = df_filtered[['symbol', 'qty', 'avg_price', 'last_price', 'buy_value', 'market_value', 'unrealized_rp', 'unrealized_pct']].copy()
+                df_display.insert(1, 'Kategori', df_display['unrealized_rp'].apply(lambda x: 'Beli (Untung)' if x >= 0 else 'Jual (Rugi)'))
+                df_display.columns = ['Emiten', 'Kategori', 'Lot/Qty', 'Avg Price', 'Last Price', 'Modal (Rp)', 'Market Value (Rp)', 'Unrealized (Rp)', 'Unrealized (%)']
+                
+                format_dict = {
+                    'Lot/Qty': '{:,.0f}', 'Avg Price': '{:,.2f}', 'Last Price': '{:,.0f}',
+                    'Modal (Rp)': '{:,.0f}', 'Market Value (Rp)': '{:,.0f}',
+                    'Unrealized (Rp)': '{:,.0f}', 'Unrealized (%)': '{:,.2f}%'
+                }
+                
+                def color_negative_red(val):
+                    if isinstance(val, (int, float)) and val < 0:
+                        return 'color: #FF3333; font-weight: 600;'
+                    return f'color: {text_color}'
+                    
+                st.dataframe(df_display.style.map(color_negative_red, subset=['Unrealized (Rp)', 'Unrealized (%)']).format(format_dict), use_container_width=True)
+            
+            else:
+                if not df_trx_filtered.empty:
+                    st.markdown(f"<h4>Log Transaksi Harian ({selected_period})</h4>", unsafe_allow_html=True)
+                    df_trx_display = df_trx_filtered[['date_str', 'category', 'description', 'amount']].copy()
+                    df_trx_display.columns = ['Tanggal', 'Kategori', 'Deskripsi Transaksi', 'Jumlah (Rp)']
+                    
+                    format_trx = {'Jumlah (Rp)': '{:,.0f}'}
+                    st.dataframe(df_trx_display.style.format(format_trx), use_container_width=True)
+                else:
+                    st.info(f"Tidak ada rincian transaksi harian terekstrak untuk periode {selected_period}.")
         else:
             st.info("Belum ada data Portofolio. Silakan upload file Statement Stockbit di Tab Konversi PDF.")
     else:
