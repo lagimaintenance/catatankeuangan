@@ -205,15 +205,6 @@ INV_DB = 'INV_Working.db'
 if not os.path.exists(WORK_DB) and os.path.exists(BASE_DB):
     shutil.copyfile(BASE_DB, WORK_DB)
 
-if os.path.exists(WORK_DB):
-    try:
-        rep_conn = sqlite3.connect(WORK_DB)
-        rep_conn.execute("DROP TABLE IF EXISTS STOCK_PORTFOLIO;")
-        rep_conn.commit()
-        rep_conn.close()
-    except:
-        pass
-
 def get_bank_connection():
     return sqlite3.connect(WORK_DB)
 
@@ -251,6 +242,41 @@ def get_inv_connection():
         
     return conn
 
+# --- PDF HELPERS ---
+def extract_pdf_text(reader):
+    """Extract text defensively; some PDF pages return None from extract_text()."""
+    chunks = []
+    for page in reader.pages:
+        chunks.append(page.extract_text() or "")
+    return "\n".join(chunks)
+
+
+def infer_statement_year(text, fallback=None):
+    """Infer the year from statement text rather than hardcoding a calendar year."""
+    fallback = fallback or datetime.datetime.now().year
+    # Prefer year close to a statement-period label, common in BCA statements.
+    patterns = [
+        r'(?is)PERIODE.{0,120}?(20\d{2})',
+        r'(?is)STATEMENT\s*(?:DATE|PERIOD)?.{0,80}?(20\d{2})',
+        r'\b(20\d{2})\b',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text or "")
+        if match:
+            try:
+                year = int(match.group(1))
+                if 2000 <= year <= 2100:
+                    return year
+            except (TypeError, ValueError):
+                pass
+    return fallback
+
+
+def parse_amount_number(value):
+    """Parse statement amounts conservatively for common comma-thousands formats."""
+    value = str(value).strip().replace(',', '')
+    return float(value)
+
 # --- HELPER FUNCTIONS ---
 def parse_period_name(text):
     months_map = {'01':'Januari', '02':'Februari', '03':'Maret', '04':'April', '05':'Mei', '06':'Juni', '07':'Juli', '08':'Agustus', '09':'September', '10':'Oktober', '11':'November', '12':'Desember'}
@@ -259,6 +285,151 @@ def parse_period_name(text):
         d, month_num, year = m.groups()
         return f"{months_map.get(month_num, 'Bulan')} {year}"
     return "Periode Lainnya"
+
+
+# --- STOCKBIT SOA DAILY TRANSACTION PARSER ---
+def _soa_number(value):
+    """Convert Stockbit statement number to float, including (negative) notation."""
+    value = str(value).strip().replace(',', '')
+    if value.startswith('(') and value.endswith(')'):
+        return -float(value[1:-1])
+    return float(value)
+
+
+def parse_stockbit_daily_transactions(text):
+    """Extract economic transactions from Stockbit SoA ledger.
+
+    Stock trades are read from the detail rows beneath `Trx on ...` invoices.
+    Bond sales and bond interest/dividend entries are read from their accrual/order
+    rows. Settlement rows (Inv:..., BUY/SELL settlement, etc.) are intentionally
+    excluded to avoid counting the same trade twice.
+    """
+    transactions = []
+    current_trade_date = None
+    seen = set()
+    lines = [re.sub(r'\s+', ' ', line).strip() for line in (text or '').splitlines()]
+
+    # Format for amount columns at the end of ledger rows: Db, Cr, Ending Balance,
+    # Days, Interest. Read the last five numeric fields, not numbers in description.
+    number_re = re.compile(r'\(?-?[\d,]+(?:\.\d+)?\)?')
+
+    def ledger_fields(line):
+        """Return (debit, credit, clean description) from a dated ledger row."""
+        row = re.match(r'^\d{2}/\d{2}/\d{4}\s+\d{2}/\d{2}/\d{4}\s+(.*)$', line)
+        if not row:
+            return None, None, line
+        rest = row.group(1)
+        # Strip transaction code and reference ID, keeping description and trailing columns.
+        ref = re.match(r'^[A-Z]\s+\S+\s+(.*)$', rest)
+        if ref:
+            rest = ref.group(1)
+        tokens = rest.split()
+        trailing = []
+        # Only count numeric tokens contiguous at the very end. This avoids confusing
+        # numbers embedded in descriptions (e.g. FR0102, 2,000,000, or coupon rates).
+        while tokens and number_re.fullmatch(tokens[-1]):
+            trailing.insert(0, tokens.pop())
+        if len(trailing) < 4:
+            return None, None, rest
+        # Statement extraction may omit one blank column; normal rows have 5 fields,
+        # some rows expose only 4. Amounts are always the first two trailing fields.
+        fields = trailing[-5:] if len(trailing) >= 5 else trailing[-4:]
+        try:
+            debit, credit = _soa_number(fields[0]), _soa_number(fields[1])
+            return debit, credit, ' '.join(tokens).strip()
+        except (ValueError, TypeError):
+            return None, None, rest
+
+    def ledger_amounts(line):
+        debit, credit, _ = ledger_fields(line)
+        return debit, credit
+
+    def add(date_str, category, description, amount):
+        if not date_str or amount is None or abs(amount) < 0.000001:
+            return
+        description = re.sub(r'\s+', ' ', description).strip()
+        key = (date_str, category, description.casefold(), round(float(amount), 2))
+        if key in seen:
+            return
+        seen.add(key)
+        transactions.append({
+            'date_str': date_str,
+            'category': category,
+            'description': description,
+            'amount': round(abs(float(amount)), 2),
+        })
+
+    # Detail line for equity trade, e.g. "0002121 B: RG DMAS 1,000 @ 147=147,220.50".
+    stock_detail_re = re.compile(
+        r'(?P<ref>\d{5,8})\s+(?P<side>[BS]):\s*RG\s+'
+        r'(?P<symbol>[A-Z0-9]{3,5})\s+(?P<qty>[\d,]+)\s*@\s*'
+        r'(?P<price>[\d,.]+)\s*=\s*(?P<amount>[\d,]+(?:\.\d{1,2})?)',
+        re.IGNORECASE,
+    )
+
+    for line in lines:
+        if not line:
+            continue
+
+        # Invoice header contains the actual trade date; use it for following detail rows.
+        invoice_match = re.search(r'\bTrx on (\d{2}/\d{2}/\d{4})\b', line, re.IGNORECASE)
+        if invoice_match:
+            current_trade_date = invoice_match.group(1)
+            continue
+
+        # Every ledger row begins with transaction date and due date. New ledger rows
+        # end the previous invoice's detail context, except non-date detail lines.
+        row_match = re.match(
+            r'^(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s+(.*)$', line
+        )
+        if row_match:
+            tr_date, due_date, rest = row_match.groups()
+            current_trade_date = None
+
+            # Bond sale order rows (J), not the corresponding P settlement row.
+            if re.search(r'^J\s+\S+\s+SELL\s+(?:FR|PBS)\d+', rest, re.IGNORECASE):
+                db_amount, cr_amount = ledger_amounts(line)
+                amount = cr_amount if cr_amount and cr_amount > 0 else None
+                description = ledger_fields(line)[2].strip()
+                add(tr_date, 'Jual Obligasi', description, amount)
+                continue
+
+            # Bond interest / dividend accrual entries are D rows. The P rows that
+            # clear them are deliberately excluded to prevent duplicate income.
+            if re.search(r'^D\s+\S+\s+.*(bond interest|dividend|dividen)', rest, re.IGNORECASE):
+                db_amount, cr_amount = ledger_amounts(line)
+                amount = cr_amount if cr_amount and cr_amount > 0 else None
+                if re.search(r'dividend|dividen', rest, re.IGNORECASE):
+                    category = 'Dividen'
+                else:
+                    category = 'Bunga Obligasi'
+                description = ledger_fields(line)[2].strip()
+                add(tr_date, category, description, amount)
+                continue
+
+            # Actual transfer to/from the investor, not the R/P settlement rows for trades.
+            if re.search(r'^(?:P\s+\S+\s+Payment to:|R\s+\S+\s+Receipt from:)', rest, re.IGNORECASE):
+                db_amount, cr_amount = ledger_amounts(line)
+                if re.search(r'^P\s+', rest, re.IGNORECASE):
+                    category, amount = 'Penarikan Kas', db_amount
+                else:
+                    category, amount = 'Setoran Kas', cr_amount
+                description = ledger_fields(line)[2].strip()
+                add(tr_date, category, description, amount)
+            continue
+
+        # Equity trade detail rows are below an invoice header, often split across pages.
+        detail_match = stock_detail_re.search(line)
+        if detail_match and current_trade_date:
+            d = detail_match.groupdict()
+            category = 'Beli' if d['side'].upper() == 'B' else 'Jual'
+            description = (
+                f"{category} saham {d['symbol'].upper()} — {int(d['qty'].replace(',', '')):,} lembar "
+                f"@ Rp {_soa_number(d['price']):,.4f} (Ref {d['ref']})"
+            )
+            add(current_trade_date, category, description, _soa_number(d['amount']))
+
+    return transactions
 
 def get_category_id_v2(desc, tx_type):
     d = desc.lower()
@@ -337,7 +508,7 @@ with tab1:
     
     col_p_space1, col_p_main, col_p_space2 = st.columns([1, 2, 1])
     with col_p_main:
-        pdf_password = st.text_input("Password PDF Kartu Kredit", type="password", value="21062002")
+        pdf_password = st.text_input("Password PDF Kartu Kredit", type="password", value="")
     
     st.write("")
     col1, col2, col3 = st.columns(3)
@@ -372,13 +543,17 @@ with tab1:
                         temp_path = f"temp_{uploaded_file.name}"
                         with open(temp_path, "wb") as f: f.write(uploaded_file.getbuffer())
                         reader = pypdf.PdfReader(temp_path)
+                        raw_pdf_text = extract_pdf_text(reader)
+                        statement_year = infer_statement_year(raw_pdf_text)
+                        if not raw_pdf_text.strip():
+                            st.warning(f"Tidak ada teks yang bisa dibaca dari PDF rekening koran: {uploaded_file.name}. Jika PDF berupa scan, perlu OCR.")
+                            continue
                         text_lines = []
-                        for page in reader.pages:
-                            for line in page.extract_text().split('\n'):
-                                l = line.strip()
-                                if not l: continue
-                                if any(b in l for b in ["REKENING TAHAPAN XPRESI", "KCP SUNGKONO", "NO. REKENING", "HALAMAN", "PERIODE", "MATA UANG", "CATATAN:", "SALDO AWAL", "MUTASI CR", "MUTASI DB", "SALDO AKHIR", "KETERANGAN"]): continue
-                                text_lines.append(l)
+                        for line in raw_pdf_text.split('\n'):
+                            l = line.strip()
+                            if not l: continue
+                            if any(b in l for b in ["REKENING TAHAPAN XPRESI", "KCP SUNGKONO", "NO. REKENING", "HALAMAN", "PERIODE", "MATA UANG", "CATATAN:", "SALDO AWAL", "MUTASI CR", "MUTASI DB", "SALDO AKHIR", "KETERANGAN"]): continue
+                            text_lines.append(l)
                                 
                         blocks, curr = [], []
                         for l in text_lines:
@@ -409,7 +584,11 @@ with tab1:
                                 amount = float(db_matches[0][0].replace(',', '')) if db_matches else float(matches[0][0].replace(',', ''))
                             else: amount = [float(m[0].replace(',', '')) for m in matches][0]
                                 
-                            dt = datetime.datetime(2026, mon_in_text, day, 12, 0, 0)
+                            try:
+                                dt = datetime.datetime(statement_year, mon_in_text, day, 12, 0, 0)
+                            except ValueError:
+                                st.warning(f"Tanggal transaksi tidak valid dan dilewati: {b[0]} ({uploaded_file.name})")
+                                continue
                             timestamp_ms = int(dt.timestamp() * 1000)
                             desc = clean_desc_v3(b_str)
                             cat_id = get_category_id_v2(desc, tx_type)
@@ -430,9 +609,17 @@ with tab1:
                         temp_path = f"temp_cc_{uploaded_file.name}"
                         with open(temp_path, "wb") as f: f.write(uploaded_file.getbuffer())
                         reader = pypdf.PdfReader(temp_path)
-                        if reader.is_encrypted: reader.decrypt(pdf_password)
-                        text = ""
-                        for page in reader.pages: text += page.extract_text() + "\n"
+                        if reader.is_encrypted:
+                            if not pdf_password:
+                                raise ValueError("PDF kartu kredit terkunci. Masukkan password PDF terlebih dahulu.")
+                            decrypt_status = reader.decrypt(pdf_password)
+                            if not decrypt_status:
+                                raise ValueError("Password PDF kartu kredit salah atau PDF tidak dapat dibuka.")
+                        text = extract_pdf_text(reader)
+                        statement_year = infer_statement_year(text)
+                        if not text.strip():
+                            st.warning(f"Tidak ada teks yang bisa dibaca dari PDF kartu kredit: {uploaded_file.name}. Jika PDF berupa scan, perlu OCR.")
+                            continue
                         lines = [l.strip() for l in text.split('\n') if l.strip()]
                         
                         for line in lines:
@@ -448,9 +635,15 @@ with tab1:
                                     d_lower = desc.lower()
                                     if 'cicilan bca ke' in d_lower or 'reversal cicilan' in d_lower or 'pembayaran' in d_lower or 'biaya bunga' in d_lower or 'bunga' in d_lower: continue
                                     if is_cr: continue
-                                    month_num = months_map.get(m1.upper(), 5)
+                                    month_token = m1.upper()
+                                    month_num = int(month_token) if month_token.isdigit() else months_map.get(month_token)
+                                    if not month_num or not 1 <= month_num <= 12:
+                                        continue
                                     day_num = int(d1)
-                                    dt = datetime.datetime(2026, month_num, day_num, 12, 0, 0)
+                                    try:
+                                        dt = datetime.datetime(statement_year, month_num, day_num, 12, 0, 0)
+                                    except ValueError:
+                                        continue
                                     timestamp_ms = int(dt.timestamp() * 1000)
                                     cleaned_cc_desc = clean_desc_v3(desc)
                                     cat_id = get_category_id_v2(cleaned_cc_desc, 0)
@@ -465,12 +658,6 @@ with tab1:
                                     added_count += 1
                         os.remove(temp_path)
 
-                cursor.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'TRANSACT';", (next_id - 1,))
-                cursor.execute("PRAGMA journal_mode = DELETE;")
-                conn_bank.commit()
-                cursor.execute("VACUUM;")
-                cursor.execute("REINDEX;")
-                cursor.execute("ANALYZE;")
                 conn_bank.commit()
                 conn_bank.close()
 
@@ -482,16 +669,29 @@ with tab1:
                 for uploaded_file in uploaded_stockbit_files:
                     temp_path = f"temp_sb_{uploaded_file.name}"
                     with open(temp_path, "wb") as f: f.write(uploaded_file.getbuffer())
+                    portfolio_count_before = stockbit_count
+                    trx_count_before = stockbit_trx_count
+                    cursor_inv.execute("SAVEPOINT stockbit_file")
                     try:
                         reader = pypdf.PdfReader(temp_path)
-                        text = ""
-                        for page in reader.pages: text += page.extract_text() + "\n"
+                        text = extract_pdf_text(reader)
                         
                         period_str = parse_period_name(text)
-                        
+
+                        # Validate daily transaction extraction first. Do not erase an existing
+                        # period if this PDF format is not recognized.
+                        daily_transactions = parse_stockbit_daily_transactions(text)
+                        if not daily_transactions:
+                            raise ValueError(
+                                "Tidak ada transaksi harian yang dikenali dari PDF ini. "
+                                "Data periode lama dipertahankan; periksa format statement."
+                            )
+
+                        # Replace this statement period only after the daily parser succeeds,
+                        # so re-uploading a statement does not duplicate its rows.
                         cursor_inv.execute("DELETE FROM STOCK_PORTFOLIO WHERE period_str = ?", (period_str,))
                         cursor_inv.execute("DELETE FROM STOCK_TRANSACTIONS WHERE period_str = ?", (period_str,))
-                        
+
                         # 1. PARSER PORTFOLIO STATEMENT (Bagian Bawah)
                         if "PORTFOLIO STATEMENT" in text:
                             port_text = text.split("PORTFOLIO STATEMENT")[1]
@@ -526,45 +726,30 @@ with tab1:
                                     """, (period_str, timestamp_ms, symbol, qty, avg_price, last_price, buy_value, market_value, unrealized_rp, unrealized_pct))
                                     stockbit_count += 1
 
-                        # 2. PARSER MUTASI / TRANSAKSI HARIAN (DIVIDEN & BUY/SELL AKURAT)
-                        if "Tr. Date" in text or "Description" in text or "BUY" in text or "SELL" in text:
-                            lines = text.split('\n')
-                            for line in lines:
-                                l = line.strip()
-                                date_match = re.search(r'\b(\d{2}/\d{2}/\d{4})\b', l)
-                                if date_match and any(keyword in l.upper() for keyword in ["BUY", "SELL", "RECEIPT", "WITHDRAWAL", "FEE", "TAX", "DIVIDEND"]):
-                                    date_str = date_match.group(1)
-                                    
-                                    upper_l = l.upper()
-                                    if "BUY" in upper_l:
-                                        cat = "Beli"
-                                    elif "SELL" in upper_l:
-                                        cat = "Jual"
-                                    elif "DIVIDEND" in upper_l or "DIVIDEN" in upper_l:
-                                        cat = "Dividen"
-                                    elif "RECEIPT" in upper_l or "DEBIT" in upper_l or "CREDIT" in upper_l:
-                                        cat = "Mutasi / Kas"
-                                    else:
-                                        cat = "Biaya / Lainnya"
-                                    
-                                    # Kalkulasi akurat lembar x harga atau ambil nominal bersih dividen/transaksi
-                                    qty_price_match = re.search(r'(\d+)\s*@\s*([\d,\.]+)', l)
-                                    if qty_price_match:
-                                        lembar = float(qty_price_match.group(1).replace(',', ''))
-                                        harga = float(qty_price_match.group(2).replace(',', ''))
-                                        amount = lembar * harga
-                                    else:
-                                        amt_matches = re.findall(r'(\d{1,3}(?:,\d{3})*\.\d{2})', l)
-                                        amount = float(amt_matches[-1].replace(',', '')) if amt_matches else 0.0
-                                    
-                                    if amount > 0:
-                                        cursor_inv.execute("""
-                                            INSERT INTO STOCK_TRANSACTIONS (period_str, date_str, category, description, amount)
-                                            VALUES (?, ?, ?, ?, ?)
-                                        """, (period_str, date_str, cat, l, amount))
-                                        stockbit_trx_count += 1
+                        # 2. PARSER TRANSAKSI HARIAN STOCKBIT
+                        # Parse economic events rather than keyword-matching any row with BUY/SELL.
+                        # This captures individual equity trades, bond sales, interest/dividend
+                        # accruals, and actual cash transfers while excluding settlement duplicates.
+                        for trx in daily_transactions:
+                            cursor_inv.execute("""
+                                INSERT INTO STOCK_TRANSACTIONS
+                                (period_str, date_str, category, description, amount)
+                                VALUES (?, ?, ?, ?, ?)
+                            """, (
+                                period_str,
+                                trx['date_str'],
+                                trx['category'],
+                                trx['description'],
+                                trx['amount'],
+                            ))
+                            stockbit_trx_count += 1
 
+                        cursor_inv.execute("RELEASE SAVEPOINT stockbit_file")
                     except Exception as e:
+                        cursor_inv.execute("ROLLBACK TO SAVEPOINT stockbit_file")
+                        cursor_inv.execute("RELEASE SAVEPOINT stockbit_file")
+                        stockbit_count = portfolio_count_before
+                        stockbit_trx_count = trx_count_before
                         st.error(f"Gagal memproses file Stockbit: {e}")
                     finally:
                         if os.path.exists(temp_path):
@@ -579,7 +764,7 @@ with tab1:
     with col_dl1:
         if os.path.exists(WORK_DB):
             with open(WORK_DB, "rb") as f:
-                st.download_button(label="Download DB Catatan Keuangan (.ckbak)", data=f, file_name="CK(18-10-2026-132328).ckbak", mime="application/octet-stream", use_container_width=True)
+                st.download_button(label="Download DB Catatan Keuangan (.ckbak)", data=f, file_name="CK_Working.ckbak", mime="application/octet-stream", use_container_width=True)
     with col_dl2:
         if os.path.exists(INV_DB):
             with open(INV_DB, "rb") as f:
@@ -696,7 +881,7 @@ def render_investment():
             
             st.divider()
             
-            sub_tab = st.radio("Pilih Tampilan Dashboard", ["Ringkasan Portofolio", "Rincian Transaksi Harian (Beli/Jual)"], horizontal=True)
+            sub_tab = st.radio("Pilih Tampilan Dashboard", ["Ringkasan Portofolio", "Rincian Transaksi Harian"], horizontal=True)
             st.divider()
             
             if sub_tab == "Ringkasan Portofolio":
@@ -731,9 +916,13 @@ def render_investment():
                 if not df_trx_filtered.empty:
                     st.markdown(f"<h4>Log Transaksi Harian ({selected_period})</h4>", unsafe_allow_html=True)
                     df_trx_display = df_trx_filtered[['date_str', 'category', 'description', 'amount']].copy()
+                    df_trx_display['_tanggal_sort'] = pd.to_datetime(
+                        df_trx_display['date_str'], format='%d/%m/%Y', errors='coerce'
+                    )
+                    df_trx_display = df_trx_display.sort_values('_tanggal_sort', ascending=False).drop(columns='_tanggal_sort')
                     df_trx_display.columns = ['Tanggal', 'Kategori', 'Deskripsi Transaksi', 'Jumlah (Rp)']
-                    
-                    format_trx = {'Jumlah (Rp)': '{:,.0f}'}
+
+                    format_trx = {'Jumlah (Rp)': '{:,.2f}'}
                     st.dataframe(df_trx_display.style.format(format_trx), use_container_width=True)
                 else:
                     st.info(f"Tidak ada rincian transaksi harian terekstrak untuk periode {selected_period}.")
