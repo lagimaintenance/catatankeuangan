@@ -1,5 +1,7 @@
 streamlit
-pypdf
-cryptography
-pycryptodome
 pandas
+pypdf
+pyxirr
+altair
+numpy
+openpyxl
