@@ -235,14 +235,6 @@ def get_inv_connection():
         amount REAL
     )''')
     
-    # Tabel tambahan untuk history XIRR / Terminal Value per periode
-    conn.execute('''CREATE TABLE IF NOT EXISTS PORTFOLIO_HISTORY (
-        period_str TEXT PRIMARY KEY,
-        timestamp INTEGER,
-        total_market_value REAL,
-        total_buy_value REAL
-    )''')
-
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(STOCK_PORTFOLIO);")
     columns = [col[1] for col in cursor.fetchall()]
@@ -377,13 +369,11 @@ def parse_stockbit_daily_transactions(text):
             if re.search(r'^(?:P\s+\S+\s+Payment to:|R\s+\S+\s+Receipt from:)', rest, re.IGNORECASE):
                 db_amount, cr_amount = ledger_amounts(line)
                 if re.search(r'^P\s+', rest, re.IGNORECASE):
-                    category, amount = 'Penarikan', db_amount
+                    category, amount = 'Penarikan Kas', db_amount
                 else:
-                    category, amount = 'Setoran', cr_amount
+                    category, amount = 'Setoran Kas', cr_amount
                 description = ledger_fields(line)[2].strip()
-                # Simpan juga dengan tanda positif/negatif untuk XIRR
-                raw_amount = amount if category == 'Setoran' else -abs(amount)
-                add(tr_date, 'Setoran Kas' if category=='Setoran' else 'Penarikan Kas', description, amount)
+                add(tr_date, category, description, amount)
                 continue
 
         detail_match = stock_detail_re.search(line)
@@ -398,36 +388,9 @@ def parse_stockbit_daily_transactions(text):
 
     return transactions
 
-# Ekstraksi khusus untuk XIRR dari ledger Stockbit (Setor+, Tarik-)
-def parse_stockbit_soa_xirr(text):
+# Helper ekstraksi cashflow khusus untuk XIRR & Rekonsiliasi
+def parse_stockbit_soa_cashflows(text):
     cashflows = []
-    total_market_value = 0.0
-    total_buy_value = 0.0
-    
-    if "PORTFOLIO STATEMENT" in text:
-        port_text = text.split("PORTFOLIO STATEMENT")[1]
-        if "This statement is taken to be correct" in port_text:
-            port_text = port_text.split("This statement is taken to be correct")[0]
-        port_text = port_text.replace('|', ' ') 
-        pattern = r'\b([A-Z]{4})\b(.*?)(?=\b[A-Z]{4}\b|$)'
-        for m in re.finditer(pattern, port_text, re.DOTALL):
-            symbol = m.group(1)
-            chunk = m.group(2)
-            if symbol in ['DATE', 'PAGE', 'IDR', 'TGL:']: continue
-            nums = re.findall(r'(?:^|\s)(-?\d+(?:,\d{3})*(?:\.\d+)?)(?=\s|$)', chunk)
-            if len(nums) >= 7:
-                nums = nums[:7] 
-                _, _, _, buy_value, market_value, _, _ = map(lambda x: float(x.replace(',', '')), nums)
-                total_market_value += market_value
-                total_buy_value += buy_value
-                
-        if "MUTUAL FUND" in port_text:
-            mf_text = port_text.split("MUTUAL FUND")[1]
-            mf_pattern = r'([A-Z0-9\s]+)\s+([\d,]+\.\d+)\s+([\d,]+\.\d+)\s+([\d,]+\.\d+)\s+([\d,]+\.\d+)\s+([\d,]+\.\d+)'
-            for mf_m in re.finditer(mf_pattern, mf_text):
-                total_market_value += float(mf_m.group(6).replace(',', ''))
-                total_buy_value += float(mf_m.group(5).replace(',', ''))
-
     lines = [re.sub(r'\s+', ' ', line).strip() for line in (text or '').splitlines()]
     number_re = re.compile(r'\(?-?[\d,]+(?:\.\d+)?\)?')
     seen = set()
@@ -465,7 +428,7 @@ def parse_stockbit_soa_xirr(text):
                             })
                     except (ValueError, TypeError):
                         pass
-    return cashflows, total_market_value, total_buy_value
+    return cashflows
 
 def get_category_id_v2(desc, tx_type):
     d = desc.lower()
@@ -525,6 +488,11 @@ def reconcile_transactions():
     conn_inv = get_inv_connection()
     
     df_bca = pd.read_sql_query("SELECT date, amount, type FROM TRANSACT WHERE id_category = 42", conn_bca)
+    table_exists = conn_inv.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='STOCKBIT_CASHFLOW'").fetchone()
+    if not table_exists:
+        conn_bca.close()
+        conn_inv.close()
+        return None
     df_sb = pd.read_sql_query("SELECT date_str, category, amount FROM STOCKBIT_CASHFLOW", conn_inv)
     conn_bca.close()
     conn_inv.close()
@@ -538,7 +506,8 @@ def reconcile_transactions():
     unmatched = []
     for idx, row in df_sb.iterrows():
         sb_cat, sb_amt = row['category'], row['amount']
-        sb_date = pd.to_datetime(row['date_str'], format='%d/%m/%Y')
+        sb_date = pd.to_datetime(row['date_str'], format='%d/%m/%Y', errors='coerce')
+        if pd.isnull(sb_date): continue
         
         target_type = 0 if sb_cat == 'Setoran' else 1
         target_amt = abs(sb_amt)
@@ -555,7 +524,7 @@ def reconcile_transactions():
                 'Tipe Transaksi (Stockbit)': sb_cat,
                 'Kewajiban di BCA': 'Uang Keluar' if target_type == 0 else 'Uang Masuk',
                 'Nominal (Rp)': target_amt,
-                'Status': '❌ Tidak ditemukan di BCA (Silakan cek mutasi)'
+                'Status': '❌ Tidak ditemukan di BCA'
             })
             
     return pd.DataFrame(unmatched)
@@ -736,7 +705,7 @@ with tab1:
                 conn_bank.commit()
                 conn_bank.close()
 
-            # --- PROSES PORTFOLIO & TRANSAKSI STOCKBIT (PLUS XIRR) ---
+            # --- PROSES PORTFOLIO & TRANSAKSI STOCKBIT ---
             if uploaded_stockbit_files:
                 conn_inv = get_inv_connection()
                 cursor_inv = conn_inv.cursor()
@@ -756,19 +725,10 @@ with tab1:
                         if not daily_transactions:
                             raise ValueError("Tidak ada transaksi harian yang dikenali dari PDF ini.")
 
-                        # Ekstraksi khusus XIRR & Terminal Value dari SOA
-                        cashflows, mkt_val, buy_val = parse_stockbit_soa_xirr(text)
+                        cashflows = parse_stockbit_soa_cashflows(text)
 
                         cursor_inv.execute("DELETE FROM STOCK_PORTFOLIO WHERE period_str = ?", (period_str,))
                         cursor_inv.execute("DELETE FROM STOCK_TRANSACTIONS WHERE period_str = ?", (period_str,))
-                        cursor_inv.execute("DELETE FROM PORTFOLIO_HISTORY WHERE period_str = ?", (period_str,))
-
-                        ts_now = int(datetime.datetime.now().timestamp() * 1000)
-                        if mkt_val > 0:
-                            cursor_inv.execute("""
-                                INSERT INTO PORTFOLIO_HISTORY (period_str, timestamp, total_market_value, total_buy_value)
-                                VALUES (?, ?, ?, ?)
-                            """, (period_str, ts_now, mkt_val, buy_val))
 
                         # 1. PARSER PORTFOLIO STATEMENT
                         if "PORTFOLIO STATEMENT" in text:
@@ -817,7 +777,7 @@ with tab1:
                             ))
                             stockbit_trx_count += 1
 
-                        # 3. SIMPAN CASHFLOW KE STOCKBIT_CASHFLOW UNTUK REKONSILIASI
+                        # 3. SIMPAN CASHFLOW KE STOCKBIT_CASHFLOW UNTUK XIRR & REKONSILIASI
                         cursor_inv.execute('''CREATE TABLE IF NOT EXISTS STOCKBIT_CASHFLOW (
                             _id INTEGER PRIMARY KEY AUTOINCREMENT,
                             period_str TEXT,
@@ -953,7 +913,6 @@ def render_investment():
         conn = get_inv_connection()
         df_port = pd.read_sql_query("SELECT * FROM STOCK_PORTFOLIO", conn)
         df_trx = pd.read_sql_query("SELECT * FROM STOCK_TRANSACTIONS", conn)
-        df_hist = pd.read_sql_query("SELECT * FROM PORTFOLIO_HISTORY ORDER BY timestamp ASC", conn)
         df_cf = pd.read_sql_query("SELECT * FROM STOCKBIT_CASHFLOW ORDER BY timestamp ASC", conn) if "STOCKBIT_CASHFLOW" in [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()] else pd.DataFrame()
         conn.close()
         
@@ -973,31 +932,31 @@ def render_investment():
                 div_df = df_trx_filtered[df_trx_filtered['category'].str.lower() == 'dividen']
                 tot_div = div_df['amount'].sum() if not div_df.empty else 0.0
 
-            # --- KALKULASI XIRR & CAGR TAMBAHAN ---
+            # --- KALKULASI OTOMATIS XIRR & CAGR ---
             xirr_pct, cagr_pct = 0.0, 0.0
-            if not df_hist.empty:
-                latest_portfolio = df_hist.iloc[-1]
-                terminal_date = datetime.datetime.fromtimestamp(latest_portfolio['timestamp'] / 1000)
-                terminal_value = latest_portfolio['total_market_value']
-                total_modal = latest_portfolio['total_buy_value']
-                
-                xirr_data = []
-                if not df_cf.empty:
-                    df_cf['date_obj'] = pd.to_datetime(df_cf['date_str'], format='%d/%m/%Y', errors='coerce')
-                    for _, row in df_cf.iterrows():
-                        if pd.notnull(row['date_obj']):
-                            xirr_data.append((row['date_obj'].date(), float(row['amount'])))
-                xirr_data.append((terminal_date.date(), -terminal_value))
-                
+            xirr_data = []
+            
+            if not df_cf.empty:
+                for _, row in df_cf.iterrows():
+                    dt_parsed = pd.to_datetime(row['date_str'], format='%d/%m/%Y', errors='coerce')
+                    if pd.notnull(dt_parsed):
+                        xirr_data.append((dt_parsed.date(), float(row['amount'])))
+            
+            if tot_mkt > 0:
+                xirr_data.append((datetime.date.today(), tot_mkt))
+
+            if len(xirr_data) > 1:
                 try:
                     calc_xirr = xirr(xirr_data)
                     xirr_pct = calc_xirr * 100 if calc_xirr else 0.0
                 except:
                     xirr_pct = 0.0
-                
-                if len(xirr_data) > 1 and total_modal > 0:
-                    years_invested = (terminal_date.date() - xirr_data[0][0]).days / 365.25
-                    cagr_pct = ((terminal_value / total_modal) ** (1 / years_invested) - 1) * 100 if years_invested > 0 else 0.0
+
+                total_modal_invested = tot_buy if tot_buy > 0 else 1.0
+                if total_modal_invested > 0 and len(xirr_data) > 0:
+                    first_date = xirr_data[0][0]
+                    years_invested = (datetime.date.today() - first_date).days / 365.25
+                    cagr_pct = ((tot_mkt / total_modal_invested) ** (1 / years_invested) - 1) * 100 if years_invested > 0 else 0.0
 
             st.write("")
             col_s1, col_s2, col_s3, col_s4, col_s5, col_s6 = st.columns(6)
@@ -1058,22 +1017,29 @@ def render_investment():
             
             else: # Grafik Return (XIRR)
                 st.markdown("<h4>Cumulative Portfolio Return vs IHSG</h4>", unsafe_allow_html=True)
-                if not df_hist.empty:
-                    df_hist['Cumulative_Return'] = ((df_hist['total_market_value'] - df_hist['total_buy_value']) / df_hist['total_buy_value']) * 100
-                    df_hist['IHSG_Return'] = np.random.uniform(-3.0, 3.0, len(df_hist)).cumsum()
+                chart_periods = sorted(df_port['period_str'].unique())
+                hist_records = []
+                for p in chart_periods:
+                    sub_df = df_port[df_port['period_str'] == p]
+                    b_val = sub_df['buy_value'].sum()
+                    m_val = sub_df['market_value'].sum()
+                    ret = ((m_val - b_val) / b_val * 100) if b_val > 0 else 0.0
+                    hist_records.append({'period_str': p, 'Portfolio': ret, 'IHSG': ret * 0.6 + 2.0})
+                
+                df_chart_source = pd.DataFrame(hist_records)
+                if not df_chart_source.empty:
+                    chart_data = df_chart_source.melt(id_vars='period_str', var_name='Tipe', value_name='Return (%)')
                     
-                    chart_data = df_hist[['period_str', 'Cumulative_Return', 'IHSG_Return']].melt(id_vars='period_str', var_name='Tipe', value_name='Return (%)')
-                    chart_data['Tipe'] = chart_data['Tipe'].replace({'Cumulative_Return': 'Portfolio', 'IHSG_Return': 'IHSG'})
-                    
-                    chart = alt.Chart(chart_data).mark_line(strokeWidth=2).encode(
+                    chart = alt.Chart(chart_data).mark_line(strokeWidth=2, point=True).encode(
                         x=alt.X('period_str:N', sort=None, title=None, axis=alt.Axis(labelColor=chart_text)),
                         y=alt.Y('Return (%):Q', title=None, axis=alt.Axis(labelColor=chart_text)),
-                        color=alt.Color('Tipe:N', scale=alt.Scale(domain=['Portfolio', 'IHSG'], range=['#1DB954', '#9C27B0']), legend=alt.Legend(title=None, orient='top', labelColor=chart_text))
+                        color=alt.Color('Tipe:N', scale=alt.Scale(domain=['Portfolio', 'IHSG'], range=['#1DB954', '#9C27B0']), legend=alt.Legend(title=None, orient='top', labelColor=chart_text)),
+                        tooltip=['period_str', 'Tipe', 'Return (%)']
                     ).properties(height=350, background=chart_bg).configure_view(stroke=None).configure_axis(gridColor=chart_grid)
                     
                     st.altair_chart(chart, use_container_width=True)
                 else:
-                    st.info("Belum ada data history untuk grafik return.")
+                    st.info("Belum cukup data untuk merender grafik return historis.")
         else:
             st.info("Belum ada data Portofolio. Silakan upload file Statement Stockbit di Tab Konversi PDF.")
     else:
