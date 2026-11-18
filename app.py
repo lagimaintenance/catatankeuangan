@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import sqlite3
 import pandas as pd
 import pypdf
@@ -416,9 +417,44 @@ st.markdown(f"""
         .stApp .stTabs [data-baseweb="tab"] div {{
             font-size: 0.8rem !important;
         }}
-        div[data-testid="stMetric"] {{ min-height: 96px; padding: 15px 16px; }}
-        div[data-testid="stMetricValue"] {{ font-size: 1.25rem; }}
-        div[data-testid="stMetricLabel"] {{ font-size: 0.75rem; }}
+        /* Mobile: compact vertical rhythm when Streamlit stacks columns */
+        div[data-testid="stHorizontalBlock"] {{
+            gap: 0.7rem !important;
+            row-gap: 0.7rem !important;
+            margin-bottom: 0 !important;
+        }}
+        div[data-testid="stHorizontalBlock"] > div {{
+            margin-bottom: 0 !important;
+            min-width: 0 !important;
+        }}
+        div[data-testid="stMetric"] {{
+            min-height: 0 !important;
+            padding: 13px 16px !important;
+            margin-bottom: 0 !important;
+            border-radius: 13px !important;
+        }}
+        div[data-testid="stMetricValue"] {{
+            font-size: 1.22rem !important;
+            line-height: 1.22 !important;
+        }}
+        div[data-testid="stMetricLabel"] {{
+            font-size: 0.78rem !important;
+            line-height: 1.3 !important;
+        }}
+        .metric-section-label {{
+            margin-top: 0.45rem !important;
+            margin-bottom: 0.25rem !important;
+        }}
+        .metric-section-label.secondary {{
+            margin-top: 0.8rem !important;
+        }}
+        .app-subtitle {{
+            margin-bottom: 0.75rem !important;
+            font-size: 0.68rem !important;
+        }}
+        .stApp [data-testid="stTabs"] [data-baseweb="tab-list"] {{
+            margin-bottom: 0.8rem !important;
+        }}
     }}
     </style>
 """, unsafe_allow_html=True)
@@ -1138,6 +1174,185 @@ st.markdown(
     "<p class='app-subtitle'>PERSONAL FINANCE&nbsp;&nbsp;•&nbsp;&nbsp;CASH FLOW&nbsp;&nbsp;•&nbsp;&nbsp;INVESTMENTS</p>",
     unsafe_allow_html=True
 )
+
+# --- PLAYFUL PERSONAL CLOCK: LIVE WIB TIME + CLICKABLE DAILY RHYTHM ---
+clock_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+  :root {{
+    --card: {card_bg};
+    --text: {text_color};
+    --muted: {sub_text};
+    --border: {border_color};
+    --accent: {accent_color};
+    --chip: {tab_bg};
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0; padding: 0;
+    font-family: 'DM Sans', 'Inter', sans-serif;
+    color: var(--text);
+    background: transparent;
+  }}
+  .clock-shell {{
+    max-width: 760px; margin: 0 auto 14px;
+    padding: 17px 19px 14px;
+    border: 1px solid var(--border);
+    border-radius: 17px;
+    background: var(--card);
+    box-shadow: 0 8px 24px rgba(25,38,55,.055);
+    position: relative; overflow: hidden;
+  }}
+  .clock-shell:before {{
+    content: ''; position: absolute; inset: 0 auto 0 0; width: 3px;
+    background: var(--accent); opacity: .9;
+  }}
+  .topline {{
+    display:flex; align-items:center; justify-content:space-between;
+    gap:12px; margin-bottom:5px;
+  }}
+  .eyebrow {{
+    color:var(--muted); font-size:10px; font-weight:700;
+    letter-spacing:.16em; text-transform:uppercase;
+  }}
+  .live {{
+    display:flex; align-items:center; gap:6px; color:var(--muted);
+    font-size:10px; letter-spacing:.08em; text-transform:uppercase;
+  }}
+  .dot {{
+    width:6px;height:6px;border-radius:50%;background:#55B887;
+    box-shadow:0 0 0 3px rgba(85,184,135,.12);
+  }}
+  .mainrow {{
+    display:flex; align-items:center; justify-content:space-between;
+    gap:14px; flex-wrap:wrap;
+  }}
+  .time {{
+    font-size: clamp(29px, 5vw, 39px); line-height:1.05;
+    font-weight:700; letter-spacing:-.055em;
+    font-variant-numeric:tabular-nums;
+  }}
+  .date {{
+    color:var(--muted); font-size:11px; margin-top:5px;
+    letter-spacing:.015em;
+  }}
+  .greeting {{
+    text-align:right; flex:1; min-width:190px;
+  }}
+  .greeting-title {{
+    font-size:15px; font-weight:700; letter-spacing:-.025em;
+  }}
+  .greeting-sub {{
+    color:var(--muted); font-size:11px; margin-top:3px;
+  }}
+  .chips {{ display:flex; gap:7px; flex-wrap:wrap; margin-top:13px; }}
+  .chip {{
+    border:1px solid var(--border); background:var(--chip);
+    color:var(--muted); border-radius:999px; padding:6px 10px;
+    font:600 10px 'DM Sans','Inter',sans-serif; cursor:pointer;
+    transition:all .15s ease;
+  }}
+  .chip.active {{ color:var(--text); border-color:var(--accent); }}
+  .detail {{
+    display:none; margin-top:10px; padding:10px 12px;
+    border-radius:10px; background:var(--chip);
+    color:var(--muted); font-size:11px; line-height:1.6;
+  }}
+  .detail.show {{ display:block; }}
+  .detail strong {{ color:var(--text); }}
+  @media(max-width:520px) {{
+    .clock-shell {{ padding:15px 15px 13px; margin-bottom:10px; border-radius:14px; }}
+    .mainrow {{ align-items:flex-start; }}
+    .greeting {{ text-align:left; flex-basis:100%; }}
+    .greeting-title {{ font-size:14px; }}
+    .chips {{ margin-top:11px; }}
+  }}
+</style>
+</head>
+<body>
+<div class="clock-shell">
+  <div class="topline">
+    <div class="eyebrow">Your daily rhythm</div>
+    <div class="live"><span class="dot"></span> Live · WIB</div>
+  </div>
+  <div class="mainrow">
+    <div>
+      <div class="time" id="clock">--:--:--</div>
+      <div class="date" id="date">Loading your day...</div>
+    </div>
+    <div class="greeting">
+      <div class="greeting-title" id="greeting">Getting things ready...</div>
+      <div class="greeting-sub" id="subline">A little check-in with your day.</div>
+    </div>
+  </div>
+  <div class="chips">
+    <button class="chip active" id="marketBtn" onclick="showDetail('market')">Market hours</button>
+    <button class="chip" id="workBtn" onclick="showDetail('work')">Workday rhythm</button>
+  </div>
+  <div class="detail show" id="detail">
+    <strong>Market watch:</strong> Bursa Indonesia biasanya mulai sesi reguler pukul 09.00 WIB. Cek kalender bursa untuk hari libur dan perubahan jadwal.
+  </div>
+</div>
+<script>
+  const fmt = (opts) => new Intl.DateTimeFormat('id-ID', {{ timeZone:'Asia/Jakarta', ...opts }});
+  function updateClock() {{
+    const now = new Date();
+    const parts = Object.fromEntries(fmt({{hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}})
+      .formatToParts(now).map(p => [p.type,p.value]));
+    const h = Number(parts.hour), m = Number(parts.minute);
+    const weekday = fmt({{weekday:'short'}}).format(now).toLowerCase();
+    const weekend = weekday.startsWith('sab') || weekday.startsWith('min');
+    document.getElementById('clock').textContent = `${{parts.hour}}:${{parts.minute}}:${{parts.second}}`;
+    document.getElementById('date').textContent =
+      fmt({{weekday:'long', day:'numeric', month:'long', year:'numeric'}}).format(now);
+
+    let title, sub;
+    if (weekend) {{
+      title = h < 12 ? 'No rush. It is the weekend.' : 'A day with nowhere to be.';
+      sub = 'No office, no market. You can let the day unfold for once.';
+    }} else if (h < 9) {{
+      title = 'Another day, another set of possibilities.';
+      sub = 'Office starts at 09.00. The market does too. Take it as it comes.';
+    }} else if (h < 12) {{
+      title = 'The market is open. So is the to-do list.';
+      sub = 'No need to keep checking every move. Focus on what is in front of you.';
+    }} else if (h < 13 || (h === 13 && m < 30)) {{
+      title = 'A pause is part of the plan.';
+      sub = 'Go get lunch. Your portfolio can manage without supervision.';
+    }} else if (h < 16) {{
+      title = 'The day is moving along.';
+      sub = 'A few things left to finish. No need to make everything urgent.';
+    }} else if (h < 19) {{
+      title = 'That is enough work for today.';
+      sub = 'It is around 16.00. The market is wrapping up too. Leave some room for life.';
+    }} else {{
+      title = 'Nothing needs to be figured out tonight.';
+      sub = 'The market will be there tomorrow. For now, just be where you are.';
+    }}
+    document.getElementById('greeting').textContent = title;
+    document.getElementById('subline').textContent = sub;
+  }}
+  function showDetail(which) {{
+    const market = which === 'market';
+    document.getElementById('marketBtn').classList.toggle('active', market);
+    document.getElementById('workBtn').classList.toggle('active', !market);
+    const box = document.getElementById('detail');
+    box.classList.add('show');
+    box.innerHTML = market
+      ? '<strong>Market hours:</strong> IDX trading starts at 09.00 WIB. There is a lunch break, and closing times may vary by day. Check the official exchange calendar for holidays and special sessions.'
+      : '<strong>Your usual weekday:</strong> 09.00 · Office starts / market opens<br>12.00-ish · Take a proper lunch break<br>16.00 · Wrap up and head home<br><span style="opacity:.8">A reminder, not a deadline for having life figured out.</span>';
+  }}
+  updateClock();
+  setInterval(updateClock, 1000);
+</script>
+</body>
+</html>
+"""
+components.html(clock_html, height=190, scrolling=False)
 
 tab1, tab2, tab3 = st.tabs(["Konversi PDF", "Dashboard", "Investasi"])
 
