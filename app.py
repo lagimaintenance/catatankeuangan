@@ -4,6 +4,7 @@ import pandas as pd
 import pypdf
 import re
 import datetime
+import calendar
 import os
 import shutil
 import altair as alt
@@ -206,7 +207,7 @@ WORK_DB = 'CK_Working.ckbak'
 INV_DB = 'INV_Working.db'
 
 TRANSACT_COLS = ['_id', 'id_category', 'desc', 'type', 'date', 'amount']
-PORT_COLS = ['period_str', 'timestamp', 'symbol', 'qty', 'avg_price', 'last_price', 'buy_value', 'market_value', 'unrealized_rp', 'unrealized_pct']
+PORT_COLS = ['period_str', 'timestamp', 'symbol', 'qty', 'avg_price', 'last_price', 'buy_value', 'market_value', 'unrealized_rp', 'unrealized_pct', 'undue_trading']
 TRX_COLS = ['period_str', 'date_str', 'category', 'description', 'amount']
 CF_COLS = ['period_str', 'date_str', 'timestamp', 'category', 'amount']
 
@@ -223,17 +224,23 @@ def read_worksheet_cached(sheet_name):
 def get_sheet_df(sheet_name, expected_cols):
     try:
         df = read_worksheet_cached(sheet_name).copy()
-        if df.empty or not set(expected_cols).issubset(df.columns):
+        if df.empty:
             return pd.DataFrame(columns=expected_cols)
+        for col in expected_cols:
+            if col not in df.columns:
+                df[col] = 0.0 if col == 'undue_trading' else ""
         return df[expected_cols]
     except Exception as e:
         st.warning(f"Catatan koneksi sheet '{sheet_name}': pastikan tab '{sheet_name}' sudah dibuat di Google Sheets. ({e})")
         return pd.DataFrame(columns=expected_cols)
 
 def save_sheet_df(df, sheet_name, expected_cols):
-    out_df = df[expected_cols].copy() if not df.empty else pd.DataFrame(columns=expected_cols)
+    out_df = df.reindex(columns=expected_cols).copy() if not df.empty else pd.DataFrame(columns=expected_cols)
     out_df = out_df.fillna("")
-    conn_gsheets.update(worksheet=sheet_name, data=out_df)
+    try:
+        conn_gsheets.update(worksheet=sheet_name, data=out_df)
+    except Exception:
+        conn_gsheets.create(worksheet=sheet_name, data=out_df)
     read_worksheet_cached.clear()
 
 def get_bank_connection():
@@ -317,18 +324,114 @@ def infer_statement_year(text, fallback=None):
 
 def parse_period_name(text):
     months_map = {'01':'Januari', '02':'Februari', '03':'Maret', '04':'April', '05':'Mei', '06':'Juni', '07':'Juli', '08':'Agustus', '09':'September', '10':'Oktober', '11':'November', '12':'Desember'}
-    m = re.search(r'(\d{2})/(\d{2})/(\d{4})', text)
+    range_m = re.search(r'(\d{2})/(\d{2})/(\d{4})\s*-\s*(\d{2})/(\d{2})/(\d{4})', text or "")
+    if range_m:
+        _, _, _, _, month_num, year = range_m.groups()
+        return f"{months_map.get(month_num, 'Bulan')} {year}"
+    m = re.search(r'(\d{2})/(\d{2})/(\d{4})', text or "")
     if m:
-        d, month_num, year = m.groups()
+        _, month_num, year = m.groups()
         return f"{months_map.get(month_num, 'Bulan')} {year}"
     return "Periode Lainnya"
 
-# --- STOCKBIT SOA DAILY TRANSACTION PARSER ---
+def period_str_to_end_date(period_str):
+    months_rev = {
+        'januari': 1, 'februari': 2, 'maret': 3, 'april': 4, 'mei': 5, 'juni': 6,
+        'juli': 7, 'agustus': 8, 'september': 9, 'oktober': 10, 'november': 11, 'desember': 12
+    }
+    parts = str(period_str).strip().split()
+    if len(parts) == 2 and parts[0].lower() in months_rev and parts[1].isdigit():
+        m = months_rev[parts[0].lower()]
+        y = int(parts[1])
+        last_day = calendar.monthrange(y, m)[1]
+        end_dt = datetime.date(y, m, last_day)
+        return min(end_dt, datetime.date.today())
+    return datetime.date.today()
+
+# --- STOCKBIT SOA PARSERS ---
 def _soa_number(value):
     value = str(value).strip().replace(',', '')
     if value.startswith('(') and value.endswith(')'):
         return -float(value[1:-1])
     return float(value)
+
+def parse_stockbit_portfolio(text, period_str):
+    rows = []
+    if "PORTFOLIO STATEMENT" not in (text or ""):
+        return rows
+
+    undue_trading = 0.0
+    undue_m = re.search(r'Undue\s+Trading\s*\|?\s*(-?[\d,]+(?:\.\d+)?)', text, re.IGNORECASE)
+    if undue_m:
+        try:
+            undue_trading = _soa_number(undue_m.group(1))
+        except (ValueError, TypeError):
+            undue_trading = 0.0
+
+    port_text = text.split("PORTFOLIO STATEMENT", 1)[1]
+    if "This statement is taken to be correct" in port_text:
+        port_text = port_text.split("This statement is taken to be correct", 1)[0]
+
+    # Hapus kotak ringkasan akun (Bank / Currency ... UNREAL. GAIN/LOSS) agar tidak tercampur ke baris saham
+    port_text = re.sub(
+        r'Bank\s*/\s*Currency.*?(?:UNREAL\.\s*GAIN/LOSS|Avail\s*Limit\s*[\d,.-]+)',
+        ' ',
+        port_text,
+        flags=re.DOTALL | re.IGNORECASE
+    )
+    # Potong baris TOTAL di akhir tabel
+    port_text = re.split(r'\bTOTAL\b', port_text, maxsplit=1)[0]
+    port_text = port_text.replace('|', ' ')
+
+    # Setiap emiten/kas berada di awal baris (4 huruf kapital atau IDR)
+    pattern = r'(?m)^([A-Z]{4}|IDR)\b(.*?)(?=^(?:[A-Z]{4}|IDR)\b|\Z)'
+    ts_now = int(datetime.datetime.now().timestamp() * 1000)
+
+    for m in re.finditer(pattern, port_text, re.DOTALL):
+        symbol = m.group(1)
+        chunk = m.group(2)
+        if symbol in {'DATE', 'PAGE', 'TGL:'}:
+            continue
+        nums = re.findall(r'(?:^|\s)(-?\d+(?:,\d{3})*(?:\.\d+)?)(?=\s|$)', chunk)
+        # Kolom Stockbit: [Market Margin], Quantity, Buying (avg), Close (last), Buying Value, Market Value, Unrealized Rp, Unrealized %
+        if len(nums) >= 7:
+            tail = nums[-6:]
+            avg_price = float(tail[0].replace(',', ''))
+            last_price = float(tail[1].replace(',', ''))
+            buy_value = float(tail[2].replace(',', ''))
+            market_value = float(tail[3].replace(',', ''))
+            unrealized_rp = float(tail[4].replace(',', ''))
+            unrealized_pct = float(tail[5].replace(',', ''))
+
+            # Validasi matematis: Market Value - Buying Value == Unrealized Gain/Loss (Rp)
+            if abs((market_value - buy_value) - unrealized_rp) > 5:
+                continue
+
+            prefix_nums = [float(x.replace(',', '')) for x in nums[:-6]]
+            if symbol == 'IDR':
+                qty = 1.0
+            elif avg_price > 0 and buy_value > 0:
+                qty = round(buy_value / avg_price)
+            elif len(prefix_nums) >= 2:
+                non_margin = [x for x in prefix_nums if x not in (1.0, 2.0, 3.0)]
+                qty = non_margin[0] if non_margin else prefix_nums[-1]
+            else:
+                qty = prefix_nums[0]
+
+            rows.append({
+                'period_str': period_str,
+                'timestamp': ts_now,
+                'symbol': symbol,
+                'qty': float(qty),
+                'avg_price': avg_price,
+                'last_price': last_price,
+                'buy_value': buy_value,
+                'market_value': market_value,
+                'unrealized_rp': unrealized_rp,
+                'unrealized_pct': unrealized_pct,
+                'undue_trading': undue_trading
+            })
+    return rows
 
 def parse_stockbit_daily_transactions(text):
     transactions = []
@@ -377,10 +480,11 @@ def parse_stockbit_daily_transactions(text):
             'amount': round(abs(float(amount)), 2),
         })
 
+    # Mendukung pemisah '=' maupun '-' yang kadang dihasilkan ekstraksi pypdf
     stock_detail_re = re.compile(
         r'(?P<ref>\d{5,8})\s+(?P<side>[BS]):\s*RG\s+'
         r'(?P<symbol>[A-Z0-9]{3,5})\s+(?P<qty>[\d,]+)\s*@\s*'
-        r'(?P<price>[\d,.]+)\s*=\s*(?P<amount>[\d,]+(?:\.\d{1,2})?)',
+        r'(?P<price>[\d,.]+)\s*[=-]\s*(?P<amount>[\d,]+(?:\.\d{1,2})?)',
         re.IGNORECASE,
     )
 
@@ -435,6 +539,7 @@ def parse_stockbit_daily_transactions(text):
     return transactions
 
 # Helper ekstraksi cashflow khusus untuk XIRR & Rekonsiliasi
+# Konvensi XIRR: Setoran ke RDN = negatif (-), Penarikan dari RDN = positif (+)
 def parse_stockbit_soa_cashflows(text):
     cashflows = []
     lines = [re.sub(r'\s+', ' ', line).strip() for line in (text or '').splitlines()]
@@ -442,7 +547,8 @@ def parse_stockbit_soa_cashflows(text):
     seen = set()
 
     for line in lines:
-        if not line: continue
+        if not line:
+            continue
         row_match = re.match(r'^(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s+(.*)$', line)
         if row_match:
             tr_date, _, rest = row_match.groups()
@@ -459,7 +565,7 @@ def parse_stockbit_soa_cashflows(text):
                     try:
                         debit, credit = _soa_number(fields[0]), _soa_number(fields[1])
                         category = 'Penarikan' if re.search(r'^P\s+', rest, re.IGNORECASE) else 'Setoran'
-                        amount = credit if category == 'Setoran' else -abs(debit)
+                        amount = abs(debit) if category == 'Penarikan' else -abs(credit)
                         
                         key = (tr_date, category, round(float(amount), 2))
                         if key not in seen and abs(amount) > 0.000001:
@@ -795,11 +901,12 @@ with tab1:
                         text = extract_pdf_text(reader)
                         period_str = parse_period_name(text)
 
+                        new_port_rows = parse_stockbit_portfolio(text, period_str)
                         daily_transactions = parse_stockbit_daily_transactions(text)
-                        if not daily_transactions:
-                            raise ValueError("Tidak ada transaksi harian yang dikenali dari PDF ini.")
-
                         cashflows = parse_stockbit_soa_cashflows(text)
+
+                        if not new_port_rows and not daily_transactions:
+                            raise ValueError("Tidak ada data portofolio maupun transaksi harian yang dikenali dari PDF ini.")
 
                         # Hapus data periode yang sama sebelum menimpa (anti-duplikat)
                         if not df_port.empty:
@@ -809,35 +916,7 @@ with tab1:
                         if not df_cf.empty:
                             df_cf = df_cf[df_cf['period_str'] != period_str]
 
-                        new_port_rows = []
-                        if "PORTFOLIO STATEMENT" in text:
-                            port_text = text.split("PORTFOLIO STATEMENT")[1]
-                            if "This statement is taken to be correct" in port_text:
-                                port_text = port_text.split("This statement is taken to be correct")[0]
-                            port_text = port_text.replace('|', ' ')
-                            pattern = r'\b([A-Z]{4})\b(.*?)(?=\b[A-Z]{4}\b|$)'
-                            matches = re.finditer(pattern, port_text, re.DOTALL)
-                            
-                            for m in matches:
-                                symbol = m.group(1)
-                                chunk = m.group(2)
-                                if symbol in ['DATE', 'PAGE', 'IDR', 'TGL:']: continue
-                                nums = re.findall(r'(?:^|\s)(-?\d+(?:,\d{3})*(?:\.\d+)?)(?=\s|$)', chunk)
-                                if len(nums) >= 7:
-                                    nums = nums[:7]
-                                    new_port_rows.append({
-                                        'period_str': period_str,
-                                        'timestamp': int(datetime.datetime.now().timestamp() * 1000),
-                                        'symbol': symbol,
-                                        'qty': float(nums[0].replace(',', '')),
-                                        'avg_price': float(nums[1].replace(',', '')),
-                                        'last_price': float(nums[2].replace(',', '')),
-                                        'buy_value': float(nums[3].replace(',', '')),
-                                        'market_value': float(nums[4].replace(',', '')),
-                                        'unrealized_rp': float(nums[5].replace(',', '')),
-                                        'unrealized_pct': float(nums[6].replace(',', ''))
-                                    })
-                                    stockbit_count += 1
+                        stockbit_count += len(new_port_rows)
 
                         new_trx_rows = [
                             {
@@ -880,7 +959,7 @@ with tab1:
                 save_sheet_df(df_cf, "STOCKBIT_CASHFLOW", CF_COLS)
                 sync_inv_db_from_dfs(df_port, df_trx, df_cf)
             
-            st.success(f"Sinkronisasi Google Sheets Selesai! | Transaksi Bank: {added_count} (Duplikat: {duplicate_count}) | Portofolio: {stockbit_count} emiten | Transaksi Harian: {stockbit_trx_count} terekstrak")
+            st.success(f"Sinkronisasi Google Sheets Selesai! | Transaksi Bank: {added_count} (Duplikat: {duplicate_count}) | Portofolio: {stockbit_count} baris | Transaksi Harian: {stockbit_trx_count} terekstrak")
 
             # Jalankan Rekonsiliasi Otomatis BCA vs Stockbit
             df_reconcile = reconcile_transactions()
@@ -984,7 +1063,7 @@ def render_investment():
     df_cf = get_sheet_df("STOCKBIT_CASHFLOW", CF_COLS)
     
     if not df_port.empty:
-        for col in ['qty', 'avg_price', 'last_price', 'buy_value', 'market_value', 'unrealized_rp', 'unrealized_pct']:
+        for col in ['qty', 'avg_price', 'last_price', 'buy_value', 'market_value', 'unrealized_rp', 'unrealized_pct', 'undue_trading']:
             df_port[col] = pd.to_numeric(df_port[col], errors='coerce').fillna(0.0)
         if not df_trx.empty:
             df_trx['amount'] = pd.to_numeric(df_trx['amount'], errors='coerce').fillna(0.0)
@@ -995,6 +1074,7 @@ def render_investment():
 
         periods = sorted(df_port['period_str'].astype(str).unique(), reverse=True)
         selected_period = st.selectbox("Pilih Periode Statement Bulanan", periods)
+        val_date = period_str_to_end_date(selected_period)
         
         df_filtered = df_port[df_port['period_str'] == selected_period].reset_index(drop=True)
         df_trx_filtered = df_trx[df_trx['period_str'] == selected_period].reset_index(drop=True) if not df_trx.empty else pd.DataFrame()
@@ -1002,6 +1082,7 @@ def render_investment():
         tot_buy = df_filtered['buy_value'].sum()
         tot_mkt = df_filtered['market_value'].sum()
         tot_unreal = df_filtered['unrealized_rp'].sum()
+        undue_val = float(df_filtered['undue_trading'].iloc[0]) if not df_filtered.empty else 0.0
         
         tot_div = 0.0
         if not df_trx_filtered.empty and 'category' in df_trx_filtered.columns:
@@ -1015,30 +1096,38 @@ def render_investment():
         if not df_cf.empty:
             for _, row in df_cf.iterrows():
                 dt_parsed = pd.to_datetime(row['date_str'], format='%d/%m/%Y', errors='coerce')
-                if pd.notnull(dt_parsed):
-                    xirr_data.append((dt_parsed.date(), float(row['amount'])))
+                if pd.notnull(dt_parsed) and dt_parsed.date() <= val_date:
+                    cat_lower = str(row['category']).strip().lower()
+                    raw_amt = abs(float(row['amount']))
+                    # Setoran ke RDN = arus kas keluar dari investor (-), Penarikan = arus kas masuk (+)
+                    signed_amt = -raw_amt if cat_lower == 'setoran' else raw_amt
+                    xirr_data.append((dt_parsed.date(), signed_amt))
         
-        if tot_mkt > 0:
-            xirr_data.append((datetime.date.today(), tot_mkt))
+        # Perhitungkan kewajiban T+2 yang belum jatuh tempo (undue_trading negatif) pada tanggal statement
+        net_terminal_val = max(tot_mkt + undue_val, 0.0) if undue_val < 0 else tot_mkt
+        if net_terminal_val > 0:
+            xirr_data.append((val_date, net_terminal_val))
 
         if len(xirr_data) > 1:
             try:
                 calc_xirr = xirr(xirr_data)
-                xirr_pct = calc_xirr * 100 if calc_xirr else 0.0
+                xirr_pct = calc_xirr * 100 if calc_xirr is not None else 0.0
             except Exception:
                 xirr_pct = 0.0
 
-            total_modal_invested = tot_buy if tot_buy > 0 else 1.0
-            if total_modal_invested > 0 and len(xirr_data) > 0:
-                first_date = xirr_data[0][0]
-                years_invested = (datetime.date.today() - first_date).days / 365.25
-                cagr_pct = ((tot_mkt / total_modal_invested) ** (1 / years_invested) - 1) * 100 if years_invested > 0 else 0.0
+        if tot_buy > 0 and tot_mkt > 0:
+            first_date = xirr_data[0][0] if len(xirr_data) > 1 else val_date
+            days_invested = max((val_date - first_date).days, 1)
+            years_invested = days_invested / 365.25
+            cagr_pct = ((tot_mkt / tot_buy) ** (1 / years_invested) - 1) * 100
+
+        simple_ret_pct = ((tot_mkt - tot_buy) / tot_buy * 100) if tot_buy > 0 else 0.0
 
         st.write("")
         col_s1, col_s2, col_s3, col_s4, col_s5, col_s6 = st.columns(6)
         col_s1.metric("Total Modal", f"Rp {tot_buy:,.0f}".replace(",", "."))
         col_s2.metric("Total Aset", f"Rp {tot_mkt:,.0f}".replace(",", "."))
-        col_s3.metric("Unrealized P/L", f"Rp {tot_unreal:,.0f}".replace(",", "."))
+        col_s3.metric("Unrealized P/L", f"Rp {tot_unreal:,.0f}".replace(",", "."), delta=f"{simple_ret_pct:+.2f}%")
         col_s4.metric("Total Dividen", f"Rp {tot_div:,.0f}".replace(",", "."))
         col_s5.metric("XIRR", f"{xirr_pct:,.2f}%")
         col_s6.metric("CAGR", f"{cagr_pct:,.2f}%")
@@ -1049,8 +1138,9 @@ def render_investment():
         st.divider()
         
         if sub_tab == "Ringkasan Portofolio":
+            df_stocks_only = df_filtered[df_filtered['symbol'] != 'IDR'].copy()
             st.markdown(f"<h4>Alokasi Aset ({selected_period})</h4>", unsafe_allow_html=True)
-            chart_donut = alt.Chart(df_filtered).mark_arc(innerRadius=60).encode(
+            chart_donut = alt.Chart(df_stocks_only).mark_arc(innerRadius=60).encode(
                 theta=alt.Theta(field="market_value", type="quantitative"),
                 color=alt.Color(field="symbol", type="nominal", legend=alt.Legend(title="Emiten", labelColor=chart_text, titleColor=chart_text)),
                 tooltip=['symbol', 'market_value', 'unrealized_pct']
@@ -1059,12 +1149,12 @@ def render_investment():
             st.altair_chart(chart_donut, use_container_width=True)
             
             st.markdown(f"<h4>Rincian Performa per Emiten ({selected_period})</h4>", unsafe_allow_html=True)
-            df_display = df_filtered[['symbol', 'qty', 'avg_price', 'last_price', 'buy_value', 'market_value', 'unrealized_rp', 'unrealized_pct']].copy()
-            df_display.insert(1, 'Kategori', df_display['unrealized_rp'].apply(lambda x: 'Beli (Untung)' if x >= 0 else 'Jual (Rugi)'))
-            df_display.columns = ['Emiten', 'Kategori', 'Lot/Qty', 'Avg Price', 'Last Price', 'Modal (Rp)', 'Market Value (Rp)', 'Unrealized (Rp)', 'Unrealized (%)']
+            df_display = df_stocks_only[['symbol', 'qty', 'avg_price', 'last_price', 'buy_value', 'market_value', 'unrealized_rp', 'unrealized_pct']].copy()
+            df_display.insert(1, 'Kategori', df_display['unrealized_rp'].apply(lambda x: 'Untung' if x > 0 else ('Impas' if x == 0 else 'Rugi')))
+            df_display.columns = ['Emiten', 'Status', 'Lembar/Qty', 'Avg Price', 'Last Price', 'Modal (Rp)', 'Market Value (Rp)', 'Unrealized (Rp)', 'Unrealized (%)']
             
             format_dict = {
-                'Lot/Qty': '{:,.0f}', 'Avg Price': '{:,.2f}', 'Last Price': '{:,.0f}',
+                'Lembar/Qty': '{:,.0f}', 'Avg Price': '{:,.2f}', 'Last Price': '{:,.0f}',
                 'Modal (Rp)': '{:,.0f}', 'Market Value (Rp)': '{:,.0f}',
                 'Unrealized (Rp)': '{:,.0f}', 'Unrealized (%)': '{:,.2f}%'
             }
@@ -1093,7 +1183,7 @@ def render_investment():
         
         else: # Grafik Return (XIRR)
             st.markdown("<h4>Cumulative Portfolio Return vs IHSG</h4>", unsafe_allow_html=True)
-            chart_periods = sorted(df_port['period_str'].astype(str).unique())
+            chart_periods = sorted(df_port['period_str'].astype(str).unique(), key=period_str_to_end_date)
             hist_records = []
             for p in chart_periods:
                 sub_df = df_port[df_port['period_str'] == p]
