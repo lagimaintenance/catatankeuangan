@@ -9,6 +9,7 @@ import shutil
 import altair as alt
 import numpy as np
 from pyxirr import xirr
+from streamlit_gsheets import GSheetsConnection
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Dashboard Keuangan", layout="wide")
@@ -199,50 +200,95 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
-# --- DATABASE SETUP ---
+# --- DATABASE & GOOGLE SHEETS SETUP ---
 BASE_DB = 'CK(18-10-2026-132328).ckbak'
-WORK_DB = 'CK_Working.ckbak'  
-INV_DB = 'INV_Working.db'     
+WORK_DB = 'CK_Working.ckbak'
+INV_DB = 'INV_Working.db'
+
+TRANSACT_COLS = ['_id', 'id_category', 'desc', 'type', 'date', 'amount']
+PORT_COLS = ['period_str', 'timestamp', 'symbol', 'qty', 'avg_price', 'last_price', 'buy_value', 'market_value', 'unrealized_rp', 'unrealized_pct']
+TRX_COLS = ['period_str', 'date_str', 'category', 'description', 'amount']
+CF_COLS = ['period_str', 'date_str', 'timestamp', 'category', 'amount']
 
 if not os.path.exists(WORK_DB) and os.path.exists(BASE_DB):
     shutil.copyfile(BASE_DB, WORK_DB)
 
+conn_gsheets = st.connection("gsheets", type=GSheetsConnection)
+
+@st.cache_data(ttl=60, show_spinner=False)
+def read_worksheet_cached(sheet_name):
+    df = conn_gsheets.read(worksheet=sheet_name, ttl=0)
+    return df.dropna(how='all')
+
+def get_sheet_df(sheet_name, expected_cols):
+    try:
+        df = read_worksheet_cached(sheet_name).copy()
+        if df.empty or not set(expected_cols).issubset(df.columns):
+            return pd.DataFrame(columns=expected_cols)
+        return df[expected_cols]
+    except Exception as e:
+        st.warning(f"Catatan koneksi sheet '{sheet_name}': pastikan tab '{sheet_name}' sudah dibuat di Google Sheets. ({e})")
+        return pd.DataFrame(columns=expected_cols)
+
+def save_sheet_df(df, sheet_name, expected_cols):
+    out_df = df[expected_cols].copy() if not df.empty else pd.DataFrame(columns=expected_cols)
+    out_df = out_df.fillna("")
+    conn_gsheets.update(worksheet=sheet_name, data=out_df)
+    read_worksheet_cached.clear()
+
 def get_bank_connection():
     return sqlite3.connect(WORK_DB)
 
-def get_inv_connection():
-    conn = sqlite3.connect(INV_DB)
-    conn.execute('''CREATE TABLE IF NOT EXISTS STOCK_PORTFOLIO (
-        _id INTEGER PRIMARY KEY AUTOINCREMENT,
-        period_str TEXT,
-        timestamp INTEGER,
-        symbol TEXT,
-        qty REAL,
-        avg_price REAL,
-        last_price REAL,
-        buy_value REAL,
-        market_value REAL,
-        unrealized_rp REAL,
-        unrealized_pct REAL
-    )''')
-    
-    conn.execute('''CREATE TABLE IF NOT EXISTS STOCK_TRANSACTIONS (
-        _id INTEGER PRIMARY KEY AUTOINCREMENT,
-        period_str TEXT,
-        date_str TEXT,
-        category TEXT,
-        description TEXT,
-        amount REAL
-    )''')
-    
+def get_category_map():
+    if os.path.exists(WORK_DB):
+        conn = get_bank_connection()
+        df_cat = pd.read_sql_query("SELECT _id, NAME FROM CATEGORY", conn)
+        conn.close()
+        return dict(zip(df_cat['_id'].astype(int), df_cat['NAME']))
+    return {}
+
+def load_or_seed_transact():
+    df_gs = get_sheet_df("TRANSACT", TRANSACT_COLS)
+    if df_gs.empty and os.path.exists(WORK_DB):
+        conn = get_bank_connection()
+        df_local = pd.read_sql_query("SELECT _id, id_category, desc, type, date, amount FROM TRANSACT", conn)
+        conn.close()
+        if not df_local.empty:
+            save_sheet_df(df_local, "TRANSACT", TRANSACT_COLS)
+            return df_local
+    return df_gs
+
+def sync_work_db_from_df(df_transact):
+    if not os.path.exists(WORK_DB) or df_transact.empty:
+        return
+    conn = get_bank_connection()
     cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(STOCK_PORTFOLIO);")
-    columns = [col[1] for col in cursor.fetchall()]
-    if 'period_str' not in columns:
-        cursor.execute("ALTER TABLE STOCK_PORTFOLIO ADD COLUMN period_str TEXT DEFAULT 'Bulan-Unknown';")
-        conn.commit()
-        
-    return conn
+    cursor.execute("DELETE FROM TRANSACT;")
+    rows = [
+        (
+            int(float(r['_id'])),
+            int(float(r['id_category'])),
+            str(r['desc']),
+            int(float(r['type'])),
+            int(float(r['date'])),
+            str(int(round(float(r['amount']))))
+        )
+        for _, r in df_transact.iterrows()
+    ]
+    cursor.executemany(
+        "INSERT INTO TRANSACT (_id, id_category, desc, type, date, amount) VALUES (?, ?, ?, ?, ?, ?)",
+        rows
+    )
+    conn.commit()
+    conn.close()
+
+def sync_inv_db_from_dfs(df_port, df_trx, df_cf):
+    conn = sqlite3.connect(INV_DB)
+    df_port.to_sql("STOCK_PORTFOLIO", conn, if_exists="replace", index=False)
+    df_trx.to_sql("STOCK_TRANSACTIONS", conn, if_exists="replace", index=False)
+    df_cf.to_sql("STOCKBIT_CASHFLOW", conn, if_exists="replace", index=False)
+    conn.commit()
+    conn.close()
 
 # --- PDF HELPERS ---
 def extract_pdf_text(reader):
@@ -483,37 +529,33 @@ def clean_desc_v3(text):
 
 # --- LOGIKA REKONSILIASI OTOMATIS BCA vs STOCKBIT ---
 def reconcile_transactions():
-    if not os.path.exists(WORK_DB) or not os.path.exists(INV_DB): return None
-    conn_bca = get_bank_connection()
-    conn_inv = get_inv_connection()
+    df_transact = load_or_seed_transact()
+    df_sb = get_sheet_df("STOCKBIT_CASHFLOW", CF_COLS)
     
-    df_bca = pd.read_sql_query("SELECT date, amount, type FROM TRANSACT WHERE id_category = 42", conn_bca)
-    table_exists = conn_inv.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='STOCKBIT_CASHFLOW'").fetchone()
-    if not table_exists:
-        conn_bca.close()
-        conn_inv.close()
+    if df_transact.empty or df_sb.empty:
         return None
-    df_sb = pd.read_sql_query("SELECT date_str, category, amount FROM STOCKBIT_CASHFLOW", conn_inv)
-    conn_bca.close()
-    conn_inv.close()
     
-    if df_sb.empty: return None
+    df_transact['id_category'] = pd.to_numeric(df_transact['id_category'], errors='coerce')
+    df_bca = df_transact[df_transact['id_category'] == 42].copy()
     
-    df_bca['date_obj'] = pd.to_datetime(df_bca['date'], unit='ms')
-    df_bca['amount_num'] = pd.to_numeric(df_bca['amount'])
+    df_bca['date_obj'] = pd.to_datetime(pd.to_numeric(df_bca['date'], errors='coerce'), unit='ms')
+    df_bca['amount_num'] = pd.to_numeric(df_bca['amount'], errors='coerce')
+    df_bca['type_num'] = pd.to_numeric(df_bca['type'], errors='coerce')
     bca_available = df_bca.copy()
     
     unmatched = []
-    for idx, row in df_sb.iterrows():
-        sb_cat, sb_amt = row['category'], row['amount']
+    for _, row in df_sb.iterrows():
+        sb_cat = str(row['category'])
+        sb_amt = float(pd.to_numeric(row['amount'], errors='coerce') or 0)
         sb_date = pd.to_datetime(row['date_str'], format='%d/%m/%Y', errors='coerce')
-        if pd.isnull(sb_date): continue
+        if pd.isnull(sb_date):
+            continue
         
         target_type = 0 if sb_cat == 'Setoran' else 1
         target_amt = abs(sb_amt)
         
         time_diff = (bca_available['date_obj'] - sb_date).dt.days.abs()
-        mask = (bca_available['type'] == target_type) & (bca_available['amount_num'] == target_amt) & (time_diff <= 3)
+        mask = (bca_available['type_num'] == target_type) & (bca_available['amount_num'] == target_amt) & (time_diff <= 3)
         
         match = bca_available[mask]
         if not match.empty:
@@ -542,7 +584,7 @@ with col_head2:
         st.rerun()
 
 st.markdown("<h1>Financial Dashboard</h1>", unsafe_allow_html=True)
-st.markdown(f"<p style='text-align: center; color: {sub_text}; letter-spacing: 2px; font-size: 0.75rem;'>[ SYSTEM ACTIVE // SECURE ENVIRONMENT ]</p>", unsafe_allow_html=True)
+st.markdown(f"<p style='text-align: center; color: {sub_text}; letter-spacing: 2px; font-size: 0.75rem;'>[ SYSTEM ACTIVE // CLOUD PERSISTENCE ]</p>", unsafe_allow_html=True)
 st.write("")
 
 tab1, tab2, tab3 = st.tabs(["Konversi PDF", "Dashboard", "Investasi"])
@@ -550,7 +592,7 @@ tab1, tab2, tab3 = st.tabs(["Konversi PDF", "Dashboard", "Investasi"])
 # ================= PAGE 1: KONVERSI PDF =================
 with tab1:
     st.markdown("<h3>Terminal Input Data</h3>", unsafe_allow_html=True)
-    st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.85rem;'>Upload semua file Statement (BCA / Stockbit) disini. Data investasi akan dikelompokkan per bulan secara otomatis.</p>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.85rem;'>Upload semua file Statement (BCA / Stockbit) disini. Data tersimpan otomatis ke Google Sheets.</p>", unsafe_allow_html=True)
     st.write("")
     
     col_p_space1, col_p_main, col_p_space2 = st.columns([1, 2, 1])
@@ -572,27 +614,37 @@ with tab1:
         process_btn = st.button("Proses & Sinkronisasi Database", type="primary", use_container_width=True)
 
     if process_btn:
-        with st.spinner("Memproses sinkronisasi data..."):
+        with st.spinner("Memproses sinkronisasi data ke Google Sheets..."):
             added_count, duplicate_count, stockbit_count, stockbit_trx_count = 0, 0, 0, 0
             
-            if (uploaded_bank_files or uploaded_cc_files) and not os.path.exists(WORK_DB):
-                st.error("File database template CK belum tersedia.")
-            elif uploaded_bank_files or uploaded_cc_files:
-                conn_bank = get_bank_connection()
-                cursor = conn_bank.cursor()
-                cursor.execute("SELECT MAX(_id) FROM TRANSACT;")
-                res_id = cursor.fetchone()[0]
-                next_id = (res_id or 0) + 1
+            # --- PROSES MUTASI BCA & KARTU KREDIT ---
+            if uploaded_bank_files or uploaded_cc_files:
+                df_transact = load_or_seed_transact()
+                if not df_transact.empty:
+                    df_transact['_id'] = pd.to_numeric(df_transact['_id'], errors='coerce').fillna(0).astype(int)
+                    df_transact['date'] = pd.to_numeric(df_transact['date'], errors='coerce').fillna(0).astype('int64')
+                    df_transact['type'] = pd.to_numeric(df_transact['type'], errors='coerce').fillna(0).astype(int)
+                    df_transact['amount'] = df_transact['amount'].apply(lambda x: str(int(round(float(x)))) if str(x).strip() != "" else "0")
+                    df_transact['desc'] = df_transact['desc'].astype(str)
+                    next_id = int(df_transact['_id'].max()) + 1
+                    existing_keys = set(zip(df_transact['date'], df_transact['desc'], df_transact['amount'], df_transact['type']))
+                else:
+                    next_id = 1
+                    existing_keys = set()
+                
+                new_bank_rows = []
                 
                 if uploaded_bank_files:
                     for uploaded_file in uploaded_bank_files:
                         temp_path = f"temp_{uploaded_file.name}"
-                        with open(temp_path, "wb") as f: f.write(uploaded_file.getbuffer())
+                        with open(temp_path, "wb") as f:
+                            f.write(uploaded_file.getbuffer())
                         reader = pypdf.PdfReader(temp_path)
                         raw_pdf_text = extract_pdf_text(reader)
                         statement_year = infer_statement_year(raw_pdf_text)
                         if not raw_pdf_text.strip():
                             st.warning(f"Tidak ada teks yang bisa dibaca dari PDF rekening koran: {uploaded_file.name}.")
+                            os.remove(temp_path)
                             continue
                         text_lines = []
                         for line in raw_pdf_text.split('\n'):
@@ -628,7 +680,8 @@ with tab1:
                             if is_db:
                                 db_matches = [m for m in matches if m[1] == 'DB']
                                 amount = float(db_matches[0][0].replace(',', '')) if db_matches else float(matches[0][0].replace(',', ''))
-                            else: amount = [float(m[0].replace(',', '')) for m in matches][0]
+                            else:
+                                amount = [float(m[0].replace(',', '')) for m in matches][0]
                                 
                             try:
                                 dt = datetime.datetime(statement_year, mon_in_text, day, 12, 0, 0)
@@ -639,11 +692,19 @@ with tab1:
                             cat_id = get_category_id_v2(desc, tx_type)
                             str_amount = str(int(round(amount)))
                             
-                            cursor.execute("SELECT COUNT(*) FROM TRANSACT WHERE date = ? AND desc = ? AND amount = ? AND type = ?", (timestamp_ms, desc, str_amount, tx_type))
-                            if cursor.fetchone()[0] > 0:
+                            key = (timestamp_ms, desc, str_amount, tx_type)
+                            if key in existing_keys:
                                 duplicate_count += 1
                                 continue
-                            cursor.execute("INSERT INTO TRANSACT (_id, id_category, desc, type, date, amount) VALUES (?, ?, ?, ?, ?, ?)", (next_id, cat_id, desc, tx_type, timestamp_ms, str_amount))
+                            existing_keys.add(key)
+                            new_bank_rows.append({
+                                '_id': next_id,
+                                'id_category': cat_id,
+                                'desc': desc,
+                                'type': tx_type,
+                                'date': timestamp_ms,
+                                'amount': str_amount
+                            })
                             next_id += 1
                             added_count += 1
                         os.remove(temp_path)
@@ -652,70 +713,83 @@ with tab1:
                     months_map = {'JAN':1, 'FEB':2, 'MAR':3, 'APR':4, 'MEI':5, 'JUN':6, 'JUL':7, 'AUG':8, 'SEP':9, 'OCT':10, 'NOV':11, 'DEC':12, 'AGU':8, 'AGT':8, 'OKT':10, 'NOP':11, 'DES':12}
                     for uploaded_file in uploaded_cc_files:
                         temp_path = f"temp_cc_{uploaded_file.name}"
-                        with open(temp_path, "wb") as f: f.write(uploaded_file.getbuffer())
-                        reader = pypdf.PdfReader(temp_path)
-                        if reader.is_encrypted:
-                            if not pdf_password:
-                                raise ValueError("PDF kartu kredit terkunci. Masukkan password PDF terlebih dahulu.")
-                            decrypt_status = reader.decrypt(pdf_password)
-                            if not decrypt_status:
-                                raise ValueError("Password PDF kartu kredit salah atau PDF tidak dapat dibuka.")
-                        text = extract_pdf_text(reader)
-                        statement_year = infer_statement_year(text)
-                        if not text.strip():
-                            continue
-                        lines = [l.strip() for l in text.split('\n') if l.strip()]
-                        
-                        for line in lines:
-                            m = re.match(r'^(\d{2})[-/]([A-Z]{3}|\d{2})\s+(\d{2})[-/]([A-Z]{3}|\d{2})\s+(.+)$', line, re.IGNORECASE)
-                            if m:
-                                d1, m1, d2, m2, rest = m.groups()
-                                amt_match = re.search(r'([\d\.]+)(\s+CR)?$', rest)
-                                if amt_match:
-                                    amt_str = amt_match.group(1)
-                                    is_cr = bool(amt_match.group(2))
-                                    desc = rest[:amt_match.start()].strip()
-                                    amount = float(amt_str.replace('.', ''))
-                                    d_lower = desc.lower()
-                                    if 'cicilan bca ke' in d_lower or 'reversal cicilan' in d_lower or 'pembayaran' in d_lower or 'biaya bunga' in d_lower or 'bunga' in d_lower: continue
-                                    if is_cr: continue
-                                    month_token = m1.upper()
-                                    month_num = int(month_token) if month_token.isdigit() else months_map.get(month_token)
-                                    if not month_num or not 1 <= month_num <= 12:
-                                        continue
-                                    day_num = int(d1)
-                                    try:
-                                        dt = datetime.datetime(statement_year, month_num, day_num, 12, 0, 0)
-                                    except ValueError:
-                                        continue
-                                    timestamp_ms = int(dt.timestamp() * 1000)
-                                    cleaned_cc_desc = clean_desc_v3(desc)
-                                    cat_id = get_category_id_v2(cleaned_cc_desc, 0)
-                                    str_amount = str(int(round(amount)))
-                                    
-                                    cursor.execute("SELECT COUNT(*) FROM TRANSACT WHERE date = ? AND desc = ? AND amount = ? AND type = ?", (timestamp_ms, cleaned_cc_desc, str_amount, 0))
-                                    if cursor.fetchone()[0] > 0:
-                                        duplicate_count += 1
-                                        continue
-                                    cursor.execute("INSERT INTO TRANSACT (_id, id_category, desc, type, date, amount) VALUES (?, ?, ?, ?, ?, ?)", (next_id, cat_id, cleaned_cc_desc, 0, timestamp_ms, str_amount))
-                                    next_id += 1
-                                    added_count += 1
-                        os.remove(temp_path)
+                        with open(temp_path, "wb") as f:
+                            f.write(uploaded_file.getbuffer())
+                        try:
+                            reader = pypdf.PdfReader(temp_path)
+                            if reader.is_encrypted:
+                                if not pdf_password:
+                                    raise ValueError("PDF kartu kredit terkunci. Masukkan password PDF terlebih dahulu.")
+                                decrypt_status = reader.decrypt(pdf_password)
+                                if not decrypt_status:
+                                    raise ValueError("Password PDF kartu kredit salah atau PDF tidak dapat dibuka.")
+                            text = extract_pdf_text(reader)
+                            statement_year = infer_statement_year(text)
+                            if not text.strip():
+                                continue
+                            lines = [l.strip() for l in text.split('\n') if l.strip()]
+                            
+                            for line in lines:
+                                m = re.match(r'^(\d{2})[-/]([A-Z]{3}|\d{2})\s+(\d{2})[-/]([A-Z]{3}|\d{2})\s+(.+)$', line, re.IGNORECASE)
+                                if m:
+                                    d1, m1, d2, m2, rest = m.groups()
+                                    amt_match = re.search(r'([\d\.]+)(\s+CR)?$', rest)
+                                    if amt_match:
+                                        amt_str = amt_match.group(1)
+                                        is_cr = bool(amt_match.group(2))
+                                        desc = rest[:amt_match.start()].strip()
+                                        amount = float(amt_str.replace('.', ''))
+                                        d_lower = desc.lower()
+                                        if 'cicilan bca ke' in d_lower or 'reversal cicilan' in d_lower or 'pembayaran' in d_lower or 'biaya bunga' in d_lower or 'bunga' in d_lower: continue
+                                        if is_cr: continue
+                                        month_token = m1.upper()
+                                        month_num = int(month_token) if month_token.isdigit() else months_map.get(month_token)
+                                        if not month_num or not 1 <= month_num <= 12:
+                                            continue
+                                        day_num = int(d1)
+                                        try:
+                                            dt = datetime.datetime(statement_year, month_num, day_num, 12, 0, 0)
+                                        except ValueError:
+                                            continue
+                                        timestamp_ms = int(dt.timestamp() * 1000)
+                                        cleaned_cc_desc = clean_desc_v3(desc)
+                                        cat_id = get_category_id_v2(cleaned_cc_desc, 0)
+                                        str_amount = str(int(round(amount)))
+                                        
+                                        key = (timestamp_ms, cleaned_cc_desc, str_amount, 0)
+                                        if key in existing_keys:
+                                            duplicate_count += 1
+                                            continue
+                                        existing_keys.add(key)
+                                        new_bank_rows.append({
+                                            '_id': next_id,
+                                            'id_category': cat_id,
+                                            'desc': cleaned_cc_desc,
+                                            'type': 0,
+                                            'date': timestamp_ms,
+                                            'amount': str_amount
+                                        })
+                                        next_id += 1
+                                        added_count += 1
+                        finally:
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
 
-                conn_bank.commit()
-                conn_bank.close()
+                if new_bank_rows:
+                    df_transact = pd.concat([df_transact, pd.DataFrame(new_bank_rows)], ignore_index=True)
+                    save_sheet_df(df_transact, "TRANSACT", TRANSACT_COLS)
+                    sync_work_db_from_df(df_transact)
 
             # --- PROSES PORTFOLIO & TRANSAKSI STOCKBIT ---
             if uploaded_stockbit_files:
-                conn_inv = get_inv_connection()
-                cursor_inv = conn_inv.cursor()
+                df_port = get_sheet_df("STOCK_PORTFOLIO", PORT_COLS)
+                df_trx = get_sheet_df("STOCK_TRANSACTIONS", TRX_COLS)
+                df_cf = get_sheet_df("STOCKBIT_CASHFLOW", CF_COLS)
                 
                 for uploaded_file in uploaded_stockbit_files:
                     temp_path = f"temp_sb_{uploaded_file.name}"
-                    with open(temp_path, "wb") as f: f.write(uploaded_file.getbuffer())
-                    portfolio_count_before = stockbit_count
-                    trx_count_before = stockbit_trx_count
-                    cursor_inv.execute("SAVEPOINT stockbit_file")
+                    with open(temp_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
                     try:
                         reader = pypdf.PdfReader(temp_path)
                         text = extract_pdf_text(reader)
@@ -727,15 +801,20 @@ with tab1:
 
                         cashflows = parse_stockbit_soa_cashflows(text)
 
-                        cursor_inv.execute("DELETE FROM STOCK_PORTFOLIO WHERE period_str = ?", (period_str,))
-                        cursor_inv.execute("DELETE FROM STOCK_TRANSACTIONS WHERE period_str = ?", (period_str,))
+                        # Hapus data periode yang sama sebelum menimpa (anti-duplikat)
+                        if not df_port.empty:
+                            df_port = df_port[df_port['period_str'] != period_str]
+                        if not df_trx.empty:
+                            df_trx = df_trx[df_trx['period_str'] != period_str]
+                        if not df_cf.empty:
+                            df_cf = df_cf[df_cf['period_str'] != period_str]
 
-                        # 1. PARSER PORTFOLIO STATEMENT
+                        new_port_rows = []
                         if "PORTFOLIO STATEMENT" in text:
                             port_text = text.split("PORTFOLIO STATEMENT")[1]
                             if "This statement is taken to be correct" in port_text:
                                 port_text = port_text.split("This statement is taken to be correct")[0]
-                            port_text = port_text.replace('|', ' ') 
+                            port_text = port_text.replace('|', ' ')
                             pattern = r'\b([A-Z]{4})\b(.*?)(?=\b[A-Z]{4}\b|$)'
                             matches = re.finditer(pattern, port_text, re.DOTALL)
                             
@@ -745,68 +824,63 @@ with tab1:
                                 if symbol in ['DATE', 'PAGE', 'IDR', 'TGL:']: continue
                                 nums = re.findall(r'(?:^|\s)(-?\d+(?:,\d{3})*(?:\.\d+)?)(?=\s|$)', chunk)
                                 if len(nums) >= 7:
-                                    nums = nums[:7] 
-                                    qty = float(nums[0].replace(',', ''))
-                                    avg_price = float(nums[1].replace(',', ''))
-                                    last_price = float(nums[2].replace(',', ''))
-                                    buy_value = float(nums[3].replace(',', ''))
-                                    market_value = float(nums[4].replace(',', ''))
-                                    unrealized_rp = float(nums[5].replace(',', ''))
-                                    unrealized_pct = float(nums[6].replace(',', ''))
-                                    
-                                    timestamp_ms = int(datetime.datetime.now().timestamp() * 1000)
-                                    cursor_inv.execute("""
-                                        INSERT INTO STOCK_PORTFOLIO 
-                                        (period_str, timestamp, symbol, qty, avg_price, last_price, buy_value, market_value, unrealized_rp, unrealized_pct)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    """, (period_str, timestamp_ms, symbol, qty, avg_price, last_price, buy_value, market_value, unrealized_rp, unrealized_pct))
+                                    nums = nums[:7]
+                                    new_port_rows.append({
+                                        'period_str': period_str,
+                                        'timestamp': int(datetime.datetime.now().timestamp() * 1000),
+                                        'symbol': symbol,
+                                        'qty': float(nums[0].replace(',', '')),
+                                        'avg_price': float(nums[1].replace(',', '')),
+                                        'last_price': float(nums[2].replace(',', '')),
+                                        'buy_value': float(nums[3].replace(',', '')),
+                                        'market_value': float(nums[4].replace(',', '')),
+                                        'unrealized_rp': float(nums[5].replace(',', '')),
+                                        'unrealized_pct': float(nums[6].replace(',', ''))
+                                    })
                                     stockbit_count += 1
 
-                        # 2. PARSER TRANSAKSI HARIAN STOCKBIT
-                        for trx in daily_transactions:
-                            cursor_inv.execute("""
-                                INSERT INTO STOCK_TRANSACTIONS
-                                (period_str, date_str, category, description, amount)
-                                VALUES (?, ?, ?, ?, ?)
-                            """, (
-                                period_str,
-                                trx['date_str'],
-                                trx['category'],
-                                trx['description'],
-                                trx['amount'],
-                            ))
-                            stockbit_trx_count += 1
+                        new_trx_rows = [
+                            {
+                                'period_str': period_str,
+                                'date_str': trx['date_str'],
+                                'category': trx['category'],
+                                'description': trx['description'],
+                                'amount': trx['amount']
+                            }
+                            for trx in daily_transactions
+                        ]
+                        stockbit_trx_count += len(new_trx_rows)
 
-                        # 3. SIMPAN CASHFLOW KE STOCKBIT_CASHFLOW UNTUK XIRR & REKONSILIASI
-                        cursor_inv.execute('''CREATE TABLE IF NOT EXISTS STOCKBIT_CASHFLOW (
-                            _id INTEGER PRIMARY KEY AUTOINCREMENT,
-                            period_str TEXT,
-                            date_str TEXT,
-                            timestamp INTEGER,
-                            category TEXT,
-                            amount REAL
-                        )''')
-                        cursor_inv.execute("DELETE FROM STOCKBIT_CASHFLOW WHERE period_str = ?", (period_str,))
-                        for cf in cashflows:
-                            cursor_inv.execute("""
-                                INSERT INTO STOCKBIT_CASHFLOW (period_str, date_str, timestamp, category, amount)
-                                VALUES (?, ?, ?, ?, ?)
-                            """, (period_str, cf['date_str'], cf['timestamp'], cf['category'], cf['amount']))
+                        new_cf_rows = [
+                            {
+                                'period_str': period_str,
+                                'date_str': cf['date_str'],
+                                'timestamp': cf['timestamp'],
+                                'category': cf['category'],
+                                'amount': cf['amount']
+                            }
+                            for cf in cashflows
+                        ]
 
-                        cursor_inv.execute("RELEASE SAVEPOINT stockbit_file")
+                        if new_port_rows:
+                            df_port = pd.concat([df_port, pd.DataFrame(new_port_rows)], ignore_index=True)
+                        if new_trx_rows:
+                            df_trx = pd.concat([df_trx, pd.DataFrame(new_trx_rows)], ignore_index=True)
+                        if new_cf_rows:
+                            df_cf = pd.concat([df_cf, pd.DataFrame(new_cf_rows)], ignore_index=True)
+
                     except Exception as e:
-                        cursor_inv.execute("ROLLBACK TO SAVEPOINT stockbit_file")
-                        cursor_inv.execute("RELEASE SAVEPOINT stockbit_file")
-                        stockbit_count = portfolio_count_before
-                        stockbit_trx_count = trx_count_before
-                        st.error(f"Gagal memproses file Stockbit: {e}")
+                        st.error(f"Gagal memproses file Stockbit ({uploaded_file.name}): {e}")
                     finally:
                         if os.path.exists(temp_path):
                             os.remove(temp_path)
-                conn_inv.commit()
-                conn_inv.close()
+
+                save_sheet_df(df_port, "STOCK_PORTFOLIO", PORT_COLS)
+                save_sheet_df(df_trx, "STOCK_TRANSACTIONS", TRX_COLS)
+                save_sheet_df(df_cf, "STOCKBIT_CASHFLOW", CF_COLS)
+                sync_inv_db_from_dfs(df_port, df_trx, df_cf)
             
-            st.success(f"Sinkronisasi Selesai! | Transaksi Bank: {added_count} | Portofolio: {stockbit_count} emiten | Transaksi Harian: {stockbit_trx_count} terekstrak")
+            st.success(f"Sinkronisasi Google Sheets Selesai! | Transaksi Bank: {added_count} (Duplikat: {duplicate_count}) | Portofolio: {stockbit_count} emiten | Transaksi Harian: {stockbit_trx_count} terekstrak")
 
             # Jalankan Rekonsiliasi Otomatis BCA vs Stockbit
             df_reconcile = reconcile_transactions()
@@ -836,70 +910,66 @@ def render_dashboard():
     st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.75rem; letter-spacing: 1px;'>[ FINANCIAL METRICS INTERFACE ]</p>", unsafe_allow_html=True)
     st.write("")
     
-    if os.path.exists(WORK_DB):
-        conn = get_bank_connection()
-        df = pd.read_sql_query("""
-            SELECT t._id, c.NAME as Kategori, t.desc as Deskripsi, t.amount as Jumlah, t.date, t.type
-            FROM TRANSACT t
-            JOIN CATEGORY c ON t.id_category = c._id
-        """, conn)
-        conn.close()
+    df = load_or_seed_transact()
+    cat_map = get_category_map()
+    
+    if not df.empty:
+        df['id_category'] = pd.to_numeric(df['id_category'], errors='coerce').fillna(0).astype(int)
+        df['Kategori'] = df['id_category'].map(cat_map).fillna('Lainnya')
+        df['Deskripsi'] = df['desc'].astype(str)
+        df['type'] = pd.to_numeric(df['type'], errors='coerce').fillna(0).astype(int)
+        df['datetime'] = pd.to_datetime(pd.to_numeric(df['date'], errors='coerce'), unit='ms')
+        df['Tahun'] = df['datetime'].dt.year
+        df['Bulan'] = df['datetime'].dt.month
+        df['Jumlah'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
         
-        if not df.empty:
-            df['datetime'] = pd.to_datetime(df['date'], unit='ms')
-            df['Tahun'] = df['datetime'].dt.year
-            df['Bulan'] = df['datetime'].dt.month
-            df['Jumlah'] = pd.to_numeric(df['Jumlah'])
+        years = sorted(df['Tahun'].dropna().unique().astype(int), reverse=True)
+        selected_year = st.selectbox("Pilih Tahun", years)
+        
+        df_year = df[df['Tahun'] == selected_year]
+        
+        total_income_yr = df_year[df_year['type'] == 1]['Jumlah'].sum()
+        total_expense_yr = df_year[df_year['type'] == 0]['Jumlah'].sum()
+        
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric(f"Total Pemasukan ({selected_year})", f"Rp {total_income_yr:,.0f}".replace(",", "."))
+        col_b.metric(f"Total Pengeluaran ({selected_year})", f"Rp {total_expense_yr:,.0f}".replace(",", "."))
+        col_c.metric("Net Cashflow", f"Rp {total_income_yr - total_expense_yr:,.0f}".replace(",", "."))
+        
+        st.divider()
+        
+        months_dict = {1:'Januari', 2:'Februari', 3:'Maret', 4:'April', 5:'Mei', 6:'Juni', 7:'Juli', 8:'Agustus', 9:'September', 10:'Oktober', 11:'November', 12:'Desember'}
+        available_months = sorted(df_year['Bulan'].dropna().unique().astype(int))
+        selected_month = st.selectbox("Pilih Bulan", available_months, format_func=lambda x: months_dict.get(x, str(x)))
+        
+        df_month = df_year[df_year['Bulan'] == selected_month]
+        
+        total_income_mo = df_month[df_month['type'] == 1]['Jumlah'].sum()
+        total_expense_mo = df_month[df_month['type'] == 0]['Jumlah'].sum()
+        
+        st.markdown(f"<h4 style='text-align: center; color: {text_color};'>Periode: {months_dict.get(selected_month)} {selected_year}</h4>", unsafe_allow_html=True)
+        m1, m2 = st.columns(2)
+        m1.metric("Pemasukan Bulan Ini", f"Rp {total_income_mo:,.0f}".replace(",", "."))
+        m2.metric("Pengeluaran Bulan Ini", f"Rp {total_expense_mo:,.0f}".replace(",", "."))
+        
+        df_expense_mo = df_month[df_month['type'] == 0]
+        if not df_expense_mo.empty:
+            st.markdown("<h4>Pengeluaran per Kategori</h4>", unsafe_allow_html=True)
+            cat_summary = df_expense_mo.groupby('Kategori')['Jumlah'].sum().reset_index().sort_values(by='Jumlah', ascending=False)
+            max_val = cat_summary['Jumlah'].max()
+            cat_summary['color_type'] = cat_summary['Jumlah'].apply(lambda x: '#FF3333' if x == max_val else (text_color))
             
-            years = sorted(df['Tahun'].unique(), reverse=True)
-            selected_year = st.selectbox("Pilih Tahun", years)
+            chart = alt.Chart(cat_summary).mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2).encode(
+                x=alt.X('Kategori:N', sort='-y', title=None, axis=alt.Axis(labelAngle=-45, labelColor=chart_text)),
+                y=alt.Y('Jumlah:Q', title=None, axis=alt.Axis(labelColor=chart_text)),
+                color=alt.Color('color_type:N', scale=None)
+            ).properties(height=300, background=chart_bg).configure_view(stroke=None).configure_axis(gridColor=chart_grid)
             
-            df_year = df[df['Tahun'] == selected_year]
-            
-            total_income_yr = df_year[df_year['type'] == 1]['Jumlah'].sum()
-            total_expense_yr = df_year[df_year['type'] == 0]['Jumlah'].sum()
-            
-            col_a, col_b, col_c = st.columns(3)
-            col_a.metric(f"Total Pemasukan ({selected_year})", f"Rp {total_income_yr:,.0f}".replace(",", "."))
-            col_b.metric(f"Total Pengeluaran ({selected_year})", f"Rp {total_expense_yr:,.0f}".replace(",", "."))
-            col_c.metric("Net Cashflow", f"Rp {total_income_yr - total_expense_yr:,.0f}".replace(",", "."))
-            
-            st.divider()
-            
-            months_dict = {1:'Januari', 2:'Februari', 3:'Maret', 4:'April', 5:'Mei', 6:'Juni', 7:'Juli', 8:'Agustus', 9:'September', 10:'Oktober', 11:'November', 12:'Desember'}
-            available_months = sorted(df_year['Bulan'].unique())
-            selected_month = st.selectbox("Pilih Bulan", available_months, format_func=lambda x: months_dict.get(x, str(x)))
-            
-            df_month = df_year[df_year['Bulan'] == selected_month]
-            
-            total_income_mo = df_month[df_month['type'] == 1]['Jumlah'].sum()
-            total_expense_mo = df_month[df_month['type'] == 0]['Jumlah'].sum()
-            
-            st.markdown(f"<h4 style='text-align: center; color: {text_color};'>Periode: {months_dict.get(selected_month)} {selected_year}</h4>", unsafe_allow_html=True)
-            m1, m2 = st.columns(2)
-            m1.metric("Pemasukan Bulan Ini", f"Rp {total_income_mo:,.0f}".replace(",", "."))
-            m2.metric("Pengeluaran Bulan Ini", f"Rp {total_expense_mo:,.0f}".replace(",", "."))
-            
-            df_expense_mo = df_month[df_month['type'] == 0]
-            if not df_expense_mo.empty:
-                st.markdown("<h4>Pengeluaran per Kategori</h4>", unsafe_allow_html=True)
-                cat_summary = df_expense_mo.groupby('Kategori')['Jumlah'].sum().reset_index().sort_values(by='Jumlah', ascending=False)
-                max_val = cat_summary['Jumlah'].max()
-                cat_summary['color_type'] = cat_summary['Jumlah'].apply(lambda x: '#FF3333' if x == max_val else (text_color))
-                
-                chart = alt.Chart(cat_summary).mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2).encode(
-                    x=alt.X('Kategori:N', sort='-y', title=None, axis=alt.Axis(labelAngle=-45, labelColor=chart_text)),
-                    y=alt.Y('Jumlah:Q', title=None, axis=alt.Axis(labelColor=chart_text)),
-                    color=alt.Color('color_type:N', scale=None)
-                ).properties(height=300, background=chart_bg).configure_view(stroke=None).configure_axis(gridColor=chart_grid)
-                
-                st.altair_chart(chart, use_container_width=True)
-                st.markdown("<h4>Rincian Transaksi</h4>", unsafe_allow_html=True)
-                st.dataframe(df_expense_mo[['datetime', 'Kategori', 'Deskripsi', 'Jumlah']].sort_values(by='datetime', ascending=False), use_container_width=True)
-            else:
-                st.info("Tidak ada data pengeluaran untuk periode ini.")
+            st.altair_chart(chart, use_container_width=True)
+            st.markdown("<h4>Rincian Transaksi</h4>", unsafe_allow_html=True)
+            st.dataframe(df_expense_mo[['datetime', 'Kategori', 'Deskripsi', 'Jumlah']].sort_values(by='datetime', ascending=False), use_container_width=True)
         else:
-            st.warning("Database transaksi kosong.")
+            st.info("Tidak ada data pengeluaran untuk periode ini.")
     else:
         st.info("Silakan lakukan sinkronisasi data di Tab Konversi PDF.")
 
@@ -909,141 +979,145 @@ def render_investment():
     st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.75rem; letter-spacing: 1px;'>[ HISTORICAL PERFORMANCE & TRANSACTIONS ]</p>", unsafe_allow_html=True)
     st.write("")
     
-    if os.path.exists(INV_DB):
-        conn = get_inv_connection()
-        df_port = pd.read_sql_query("SELECT * FROM STOCK_PORTFOLIO", conn)
-        df_trx = pd.read_sql_query("SELECT * FROM STOCK_TRANSACTIONS", conn)
-        df_cf = pd.read_sql_query("SELECT * FROM STOCKBIT_CASHFLOW ORDER BY timestamp ASC", conn) if "STOCKBIT_CASHFLOW" in [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()] else pd.DataFrame()
-        conn.close()
+    df_port = get_sheet_df("STOCK_PORTFOLIO", PORT_COLS)
+    df_trx = get_sheet_df("STOCK_TRANSACTIONS", TRX_COLS)
+    df_cf = get_sheet_df("STOCKBIT_CASHFLOW", CF_COLS)
+    
+    if not df_port.empty:
+        for col in ['qty', 'avg_price', 'last_price', 'buy_value', 'market_value', 'unrealized_rp', 'unrealized_pct']:
+            df_port[col] = pd.to_numeric(df_port[col], errors='coerce').fillna(0.0)
+        if not df_trx.empty:
+            df_trx['amount'] = pd.to_numeric(df_trx['amount'], errors='coerce').fillna(0.0)
+        if not df_cf.empty:
+            df_cf['amount'] = pd.to_numeric(df_cf['amount'], errors='coerce').fillna(0.0)
+            df_cf['timestamp'] = pd.to_numeric(df_cf['timestamp'], errors='coerce').fillna(0)
+            df_cf = df_cf.sort_values(by='timestamp', ascending=True)
+
+        periods = sorted(df_port['period_str'].astype(str).unique(), reverse=True)
+        selected_period = st.selectbox("Pilih Periode Statement Bulanan", periods)
         
-        if not df_port.empty:
-            periods = sorted(df_port['period_str'].unique(), reverse=True)
-            selected_period = st.selectbox("Pilih Periode Statement Bulanan", periods)
-            
-            df_filtered = df_port[df_port['period_str'] == selected_period].reset_index(drop=True)
-            df_trx_filtered = df_trx[df_trx['period_str'] == selected_period].reset_index(drop=True) if not df_trx.empty else pd.DataFrame()
-            
-            tot_buy = df_filtered['buy_value'].sum()
-            tot_mkt = df_filtered['market_value'].sum()
-            tot_unreal = df_filtered['unrealized_rp'].sum()
-            
-            tot_div = 0.0
-            if not df_trx_filtered.empty and 'category' in df_trx_filtered.columns:
-                div_df = df_trx_filtered[df_trx_filtered['category'].str.lower() == 'dividen']
-                tot_div = div_df['amount'].sum() if not div_df.empty else 0.0
+        df_filtered = df_port[df_port['period_str'] == selected_period].reset_index(drop=True)
+        df_trx_filtered = df_trx[df_trx['period_str'] == selected_period].reset_index(drop=True) if not df_trx.empty else pd.DataFrame()
+        
+        tot_buy = df_filtered['buy_value'].sum()
+        tot_mkt = df_filtered['market_value'].sum()
+        tot_unreal = df_filtered['unrealized_rp'].sum()
+        
+        tot_div = 0.0
+        if not df_trx_filtered.empty and 'category' in df_trx_filtered.columns:
+            div_df = df_trx_filtered[df_trx_filtered['category'].astype(str).str.lower() == 'dividen']
+            tot_div = div_df['amount'].sum() if not div_df.empty else 0.0
 
-            # --- KALKULASI OTOMATIS XIRR & CAGR ---
-            xirr_pct, cagr_pct = 0.0, 0.0
-            xirr_data = []
-            
-            if not df_cf.empty:
-                for _, row in df_cf.iterrows():
-                    dt_parsed = pd.to_datetime(row['date_str'], format='%d/%m/%Y', errors='coerce')
-                    if pd.notnull(dt_parsed):
-                        xirr_data.append((dt_parsed.date(), float(row['amount'])))
-            
-            if tot_mkt > 0:
-                xirr_data.append((datetime.date.today(), tot_mkt))
+        # --- KALKULASI OTOMATIS XIRR & CAGR ---
+        xirr_pct, cagr_pct = 0.0, 0.0
+        xirr_data = []
+        
+        if not df_cf.empty:
+            for _, row in df_cf.iterrows():
+                dt_parsed = pd.to_datetime(row['date_str'], format='%d/%m/%Y', errors='coerce')
+                if pd.notnull(dt_parsed):
+                    xirr_data.append((dt_parsed.date(), float(row['amount'])))
+        
+        if tot_mkt > 0:
+            xirr_data.append((datetime.date.today(), tot_mkt))
 
-            if len(xirr_data) > 1:
-                try:
-                    calc_xirr = xirr(xirr_data)
-                    xirr_pct = calc_xirr * 100 if calc_xirr else 0.0
-                except:
-                    xirr_pct = 0.0
+        if len(xirr_data) > 1:
+            try:
+                calc_xirr = xirr(xirr_data)
+                xirr_pct = calc_xirr * 100 if calc_xirr else 0.0
+            except Exception:
+                xirr_pct = 0.0
 
-                total_modal_invested = tot_buy if tot_buy > 0 else 1.0
-                if total_modal_invested > 0 and len(xirr_data) > 0:
-                    first_date = xirr_data[0][0]
-                    years_invested = (datetime.date.today() - first_date).days / 365.25
-                    cagr_pct = ((tot_mkt / total_modal_invested) ** (1 / years_invested) - 1) * 100 if years_invested > 0 else 0.0
+            total_modal_invested = tot_buy if tot_buy > 0 else 1.0
+            if total_modal_invested > 0 and len(xirr_data) > 0:
+                first_date = xirr_data[0][0]
+                years_invested = (datetime.date.today() - first_date).days / 365.25
+                cagr_pct = ((tot_mkt / total_modal_invested) ** (1 / years_invested) - 1) * 100 if years_invested > 0 else 0.0
 
-            st.write("")
-            col_s1, col_s2, col_s3, col_s4, col_s5, col_s6 = st.columns(6)
-            col_s1.metric(f"Total Modal", f"Rp {tot_buy:,.0f}".replace(",", "."))
-            col_s2.metric(f"Total Aset", f"Rp {tot_mkt:,.0f}".replace(",", "."))
-            col_s3.metric(f"Unrealized P/L", f"Rp {tot_unreal:,.0f}".replace(",", "."))
-            col_s4.metric(f"Total Dividen", f"Rp {tot_div:,.0f}".replace(",", "."))
-            col_s5.metric("XIRR", f"{xirr_pct:,.2f}%")
-            col_s6.metric("CAGR", f"{cagr_pct:,.2f}%")
+        st.write("")
+        col_s1, col_s2, col_s3, col_s4, col_s5, col_s6 = st.columns(6)
+        col_s1.metric("Total Modal", f"Rp {tot_buy:,.0f}".replace(",", "."))
+        col_s2.metric("Total Aset", f"Rp {tot_mkt:,.0f}".replace(",", "."))
+        col_s3.metric("Unrealized P/L", f"Rp {tot_unreal:,.0f}".replace(",", "."))
+        col_s4.metric("Total Dividen", f"Rp {tot_div:,.0f}".replace(",", "."))
+        col_s5.metric("XIRR", f"{xirr_pct:,.2f}%")
+        col_s6.metric("CAGR", f"{cagr_pct:,.2f}%")
+        
+        st.divider()
+        
+        sub_tab = st.radio("Pilih Tampilan Dashboard", ["Ringkasan Portofolio", "Rincian Transaksi Harian", "Grafik Return (XIRR)"], horizontal=True)
+        st.divider()
+        
+        if sub_tab == "Ringkasan Portofolio":
+            st.markdown(f"<h4>Alokasi Aset ({selected_period})</h4>", unsafe_allow_html=True)
+            chart_donut = alt.Chart(df_filtered).mark_arc(innerRadius=60).encode(
+                theta=alt.Theta(field="market_value", type="quantitative"),
+                color=alt.Color(field="symbol", type="nominal", legend=alt.Legend(title="Emiten", labelColor=chart_text, titleColor=chart_text)),
+                tooltip=['symbol', 'market_value', 'unrealized_pct']
+            ).properties(height=350, background=chart_bg).configure_view(stroke=None)
             
-            st.divider()
+            st.altair_chart(chart_donut, use_container_width=True)
             
-            sub_tab = st.radio("Pilih Tampilan Dashboard", ["Ringkasan Portofolio", "Rincian Transaksi Harian", "Grafik Return (XIRR)"], horizontal=True)
-            st.divider()
+            st.markdown(f"<h4>Rincian Performa per Emiten ({selected_period})</h4>", unsafe_allow_html=True)
+            df_display = df_filtered[['symbol', 'qty', 'avg_price', 'last_price', 'buy_value', 'market_value', 'unrealized_rp', 'unrealized_pct']].copy()
+            df_display.insert(1, 'Kategori', df_display['unrealized_rp'].apply(lambda x: 'Beli (Untung)' if x >= 0 else 'Jual (Rugi)'))
+            df_display.columns = ['Emiten', 'Kategori', 'Lot/Qty', 'Avg Price', 'Last Price', 'Modal (Rp)', 'Market Value (Rp)', 'Unrealized (Rp)', 'Unrealized (%)']
             
-            if sub_tab == "Ringkasan Portofolio":
-                st.markdown(f"<h4>Alokasi Aset ({selected_period})</h4>", unsafe_allow_html=True)
-                chart_donut = alt.Chart(df_filtered).mark_arc(innerRadius=60).encode(
-                    theta=alt.Theta(field="market_value", type="quantitative"),
-                    color=alt.Color(field="symbol", type="nominal", legend=alt.Legend(title="Emiten", labelColor=chart_text, titleColor=chart_text)),
-                    tooltip=['symbol', 'market_value', 'unrealized_pct']
-                ).properties(height=350, background=chart_bg).configure_view(stroke=None)
-                
-                st.altair_chart(chart_donut, use_container_width=True)
-                
-                st.markdown(f"<h4>Rincian Performa per Emiten ({selected_period})</h4>", unsafe_allow_html=True)
-                df_display = df_filtered[['symbol', 'qty', 'avg_price', 'last_price', 'buy_value', 'market_value', 'unrealized_rp', 'unrealized_pct']].copy()
-                df_display.insert(1, 'Kategori', df_display['unrealized_rp'].apply(lambda x: 'Beli (Untung)' if x >= 0 else 'Jual (Rugi)'))
-                df_display.columns = ['Emiten', 'Kategori', 'Lot/Qty', 'Avg Price', 'Last Price', 'Modal (Rp)', 'Market Value (Rp)', 'Unrealized (Rp)', 'Unrealized (%)']
-                
-                format_dict = {
-                    'Lot/Qty': '{:,.0f}', 'Avg Price': '{:,.2f}', 'Last Price': '{:,.0f}',
-                    'Modal (Rp)': '{:,.0f}', 'Market Value (Rp)': '{:,.0f}',
-                    'Unrealized (Rp)': '{:,.0f}', 'Unrealized (%)': '{:,.2f}%'
-                }
-                
-                def color_negative_red(val):
-                    if isinstance(val, (int, float)) and val < 0:
-                        return 'color: #FF3333; font-weight: 600;'
-                    return f'color: {text_color}'
-                    
-                st.dataframe(df_display.style.map(color_negative_red, subset=['Unrealized (Rp)', 'Unrealized (%)']).format(format_dict), use_container_width=True)
+            format_dict = {
+                'Lot/Qty': '{:,.0f}', 'Avg Price': '{:,.2f}', 'Last Price': '{:,.0f}',
+                'Modal (Rp)': '{:,.0f}', 'Market Value (Rp)': '{:,.0f}',
+                'Unrealized (Rp)': '{:,.0f}', 'Unrealized (%)': '{:,.2f}%'
+            }
             
-            elif sub_tab == "Rincian Transaksi Harian":
-                if not df_trx_filtered.empty:
-                    st.markdown(f"<h4>Log Transaksi Harian ({selected_period})</h4>", unsafe_allow_html=True)
-                    df_trx_display = df_trx_filtered[['date_str', 'category', 'description', 'amount']].copy()
-                    df_trx_display['_tanggal_sort'] = pd.to_datetime(
-                        df_trx_display['date_str'], format='%d/%m/%Y', errors='coerce'
-                    )
-                    df_trx_display = df_trx_display.sort_values('_tanggal_sort', ascending=False).drop(columns='_tanggal_sort')
-                    df_trx_display.columns = ['Tanggal', 'Kategori', 'Deskripsi Transaksi', 'Jumlah (Rp)']
+            def color_negative_red(val):
+                if isinstance(val, (int, float)) and val < 0:
+                    return 'color: #FF3333; font-weight: 600;'
+                return f'color: {text_color}'
+                
+            st.dataframe(df_display.style.map(color_negative_red, subset=['Unrealized (Rp)', 'Unrealized (%)']).format(format_dict), use_container_width=True)
+        
+        elif sub_tab == "Rincian Transaksi Harian":
+            if not df_trx_filtered.empty:
+                st.markdown(f"<h4>Log Transaksi Harian ({selected_period})</h4>", unsafe_allow_html=True)
+                df_trx_display = df_trx_filtered[['date_str', 'category', 'description', 'amount']].copy()
+                df_trx_display['_tanggal_sort'] = pd.to_datetime(
+                    df_trx_display['date_str'], format='%d/%m/%Y', errors='coerce'
+                )
+                df_trx_display = df_trx_display.sort_values('_tanggal_sort', ascending=False).drop(columns='_tanggal_sort')
+                df_trx_display.columns = ['Tanggal', 'Kategori', 'Deskripsi Transaksi', 'Jumlah (Rp)']
 
-                    format_trx = {'Jumlah (Rp)': '{:,.2f}'}
-                    st.dataframe(df_trx_display.style.format(format_trx), use_container_width=True)
-                else:
-                    st.info(f"Tidak ada rincian transaksi harian terekstrak untuk periode {selected_period}.")
+                format_trx = {'Jumlah (Rp)': '{:,.2f}'}
+                st.dataframe(df_trx_display.style.format(format_trx), use_container_width=True)
+            else:
+                st.info(f"Tidak ada rincian transaksi harian terekstrak untuk periode {selected_period}.")
+        
+        else: # Grafik Return (XIRR)
+            st.markdown("<h4>Cumulative Portfolio Return vs IHSG</h4>", unsafe_allow_html=True)
+            chart_periods = sorted(df_port['period_str'].astype(str).unique())
+            hist_records = []
+            for p in chart_periods:
+                sub_df = df_port[df_port['period_str'] == p]
+                b_val = sub_df['buy_value'].sum()
+                m_val = sub_df['market_value'].sum()
+                ret = ((m_val - b_val) / b_val * 100) if b_val > 0 else 0.0
+                hist_records.append({'period_str': p, 'Portfolio': ret, 'IHSG': ret * 0.6 + 2.0})
             
-            else: # Grafik Return (XIRR)
-                st.markdown("<h4>Cumulative Portfolio Return vs IHSG</h4>", unsafe_allow_html=True)
-                chart_periods = sorted(df_port['period_str'].unique())
-                hist_records = []
-                for p in chart_periods:
-                    sub_df = df_port[df_port['period_str'] == p]
-                    b_val = sub_df['buy_value'].sum()
-                    m_val = sub_df['market_value'].sum()
-                    ret = ((m_val - b_val) / b_val * 100) if b_val > 0 else 0.0
-                    hist_records.append({'period_str': p, 'Portfolio': ret, 'IHSG': ret * 0.6 + 2.0})
+            df_chart_source = pd.DataFrame(hist_records)
+            if not df_chart_source.empty:
+                chart_data = df_chart_source.melt(id_vars='period_str', var_name='Tipe', value_name='Return (%)')
                 
-                df_chart_source = pd.DataFrame(hist_records)
-                if not df_chart_source.empty:
-                    chart_data = df_chart_source.melt(id_vars='period_str', var_name='Tipe', value_name='Return (%)')
-                    
-                    chart = alt.Chart(chart_data).mark_line(strokeWidth=2, point=True).encode(
-                        x=alt.X('period_str:N', sort=None, title=None, axis=alt.Axis(labelColor=chart_text)),
-                        y=alt.Y('Return (%):Q', title=None, axis=alt.Axis(labelColor=chart_text)),
-                        color=alt.Color('Tipe:N', scale=alt.Scale(domain=['Portfolio', 'IHSG'], range=['#1DB954', '#9C27B0']), legend=alt.Legend(title=None, orient='top', labelColor=chart_text)),
-                        tooltip=['period_str', 'Tipe', 'Return (%)']
-                    ).properties(height=350, background=chart_bg).configure_view(stroke=None).configure_axis(gridColor=chart_grid)
-                    
-                    st.altair_chart(chart, use_container_width=True)
-                else:
-                    st.info("Belum cukup data untuk merender grafik return historis.")
-        else:
-            st.info("Belum ada data Portofolio. Silakan upload file Statement Stockbit di Tab Konversi PDF.")
+                chart = alt.Chart(chart_data).mark_line(strokeWidth=2, point=True).encode(
+                    x=alt.X('period_str:N', sort=None, title=None, axis=alt.Axis(labelColor=chart_text)),
+                    y=alt.Y('Return (%):Q', title=None, axis=alt.Axis(labelColor=chart_text)),
+                    color=alt.Color('Tipe:N', scale=alt.Scale(domain=['Portfolio', 'IHSG'], range=['#1DB954', '#9C27B0']), legend=alt.Legend(title=None, orient='top', labelColor=chart_text)),
+                    tooltip=['period_str', 'Tipe', 'Return (%)']
+                ).properties(height=350, background=chart_bg).configure_view(stroke=None).configure_axis(gridColor=chart_grid)
+                
+                st.altair_chart(chart, use_container_width=True)
+            else:
+                st.info("Belum cukup data untuk merender grafik return historis.")
     else:
-        st.warning("Database Investasi belum tersedia.")
+        st.info("Belum ada data Portofolio di Google Sheets. Silakan upload ulang file Statement Stockbit di Tab Konversi PDF.")
 
 # ================= PAGE 2: DASHBOARD (Protected) =================
 with tab2:
