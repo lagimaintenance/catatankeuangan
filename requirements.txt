@@ -5,5 +5,4 @@ pyxirr
 altair
 numpy
 openpyxl
-streamlit-gsheets
-gspread
+st-gsheets-connection
