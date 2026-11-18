@@ -28,7 +28,7 @@ if st.session_state.theme == 'Light':
     border_color = "#E1E6ED"
     input_bg = "#FFFFFF"
     tab_bg = "#EEF1F5"
-    tab_active_bg = "#202C3B"
+    tab_active_bg = "#263548"
     tab_active_text = "#FFFFFF"
     tab_inactive_text = "#536071"
     primary_btn_bg = "#202C3B"
@@ -47,7 +47,7 @@ else:
     border_color = "#303946"
     input_bg = "#171D25"
     tab_bg = "#1B222C"
-    tab_active_bg = "#E9EEF5"
+    tab_active_bg = "#DDE5EF"
     tab_active_text = "#17202B"
     tab_inactive_text = "#B8C2CF"
     primary_btn_bg = "#E9EEF5"
@@ -61,13 +61,19 @@ else:
 
 st.markdown(f"""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Montserrat:wght@500;600;700;800&display=swap');
 
     .stApp {{
         background: {bg_color};
         color: {text_color};
-        font-family: 'Inter', sans-serif !important;
+        font-family: 'Manrope', 'Avenir Next', sans-serif !important;
         font-size: 0.92rem;
+    }}
+    header[data-testid="stHeader"] {{
+        background: transparent !important;
+    }}
+    div[data-testid="stToolbar"] {{
+        background: transparent !important;
     }}
 
     /* Overall page rhythm */
@@ -78,6 +84,7 @@ st.markdown(f"""
     }}
 
     h1 {{
+        font-family: 'Montserrat', sans-serif !important;
         text-align: center;
         color: {text_color};
         font-weight: 700;
@@ -88,6 +95,7 @@ st.markdown(f"""
     }}
 
     h3 {{
+        font-family: 'Montserrat', sans-serif !important;
         text-align: center;
         color: {text_color};
         font-weight: 650;
@@ -95,6 +103,7 @@ st.markdown(f"""
     }}
 
     h4 {{
+        font-family: 'Montserrat', sans-serif !important;
         text-align: center;
         color: {text_color};
         font-weight: 600;
@@ -141,52 +150,71 @@ st.markdown(f"""
         letter-spacing: 0.045em;
     }}
 
-    /* CENTERED NAVIGATION TABS */
+    /* CENTERED NAVIGATION — COMPACT FLOATING FRAME */
     div[data-testid="stTabs"] > div:first-child {{
         width: 100% !important;
+        display: flex !important;
+        justify-content: center !important;
     }}
     .stApp div[data-testid="stTabs"] [data-baseweb="tab-list"],
     .stApp div[data-testid="stTabs"] [role="tablist"] {{
-        display: flex !important;
+        display: inline-flex !important;
         justify-content: center !important;
         align-items: center !important;
-        width: 100% !important;
+        width: fit-content !important;
         max-width: 100% !important;
         box-sizing: border-box !important;
-        margin: 0 auto 1.25rem !important;
-        gap: 8px !important;
-        background: transparent !important;
-        padding: 0 0 12px !important;
+        margin: 0 auto 1.35rem !important;
+        gap: 5px !important;
+        background: {tab_bg} !important;
+        padding: 5px !important;
+        border: 1px solid {border_color} !important;
+        border-radius: 12px !important;
+        box-shadow: 0 3px 12px rgba(20, 30, 45, 0.035) !important;
         border-bottom: 1px solid {border_color} !important;
     }}
     .stApp .stTabs [data-baseweb="tab-highlight"],
-    .stApp .stTabs [data-baseweb="tab-border"] {{
+    .stApp .stTabs [data-baseweb="tab-border"],
+    .stApp .stTabs [data-baseweb="tab"]::after,
+    .stApp .stTabs [role="tab"]::after {{
         display: none !important;
+        height: 0 !important;
+        border: 0 !important;
+        background: transparent !important;
     }}
-    .stApp .stTabs [data-baseweb="tab"] {{
+    .stApp .stTabs [data-baseweb="tab"],
+    .stApp .stTabs [role="tab"] {{
         flex: 0 0 auto !important;
         background: transparent !important;
-        border: 1px solid transparent !important;
-        border-radius: 999px !important;
-        padding: 8px 19px !important;
+        border: 0 !important;
+        border-bottom: 0 !important;
+        box-shadow: none !important;
+        border-radius: 8px !important;
+        padding: 9px 17px !important;
         margin: 0 !important;
-        min-height: 40px !important;
-        transition: all 0.18s ease;
+        min-height: 39px !important;
+        transition: background 0.18s ease, color 0.18s ease;
     }}
     .stApp .stTabs [data-baseweb="tab"] p,
     .stApp .stTabs [data-baseweb="tab"] span,
-    .stApp .stTabs [data-baseweb="tab"] div {{
+    .stApp .stTabs [data-baseweb="tab"] div,
+    .stApp .stTabs [role="tab"] p,
+    .stApp .stTabs [role="tab"] span,
+    .stApp .stTabs [role="tab"] div {{
         color: {tab_inactive_text} !important;
-        font-size: 0.78rem !important;
+        font-family: 'Montserrat', sans-serif !important;
+        font-size: 0.76rem !important;
         font-weight: 600 !important;
-        letter-spacing: 0.035em;
-        text-transform: uppercase;
+        letter-spacing: 0.015em;
+        text-transform: none;
     }}
     .stApp .stTabs [data-baseweb="tab"][aria-selected="true"],
     .stApp .stTabs [role="tab"][aria-selected="true"] {{
         background: {tab_active_bg} !important;
-        border: 1px solid {accent_color} !important;
-        border-radius: 999px !important;
+        border: 0 !important;
+        border-bottom: 0 !important;
+        border-radius: 8px !important;
+        box-shadow: 0 1px 3px rgba(20, 30, 45, 0.10) !important;
     }}
     .stApp .stTabs [aria-selected="true"] p,
     .stApp .stTabs [aria-selected="true"] span,
@@ -195,7 +223,7 @@ st.markdown(f"""
         font-weight: 700 !important;
     }}
     .stApp .stTabs [data-baseweb="tab-panel"] {{
-        padding-top: 0.75rem;
+        padding-top: 0.8rem;
     }}
 
     /* Buttons */
@@ -208,6 +236,7 @@ st.markdown(f"""
         border: 1px solid {border_color} !important;
         border-radius: 9px !important;
         min-height: 40px;
+        font-family: 'Manrope', 'Avenir Next', sans-serif !important;
         font-weight: 600 !important;
         font-size: 0.82rem !important;
         box-shadow: {shadow_box};
@@ -246,22 +275,54 @@ st.markdown(f"""
         opacity: 0.94;
     }}
 
-    /* Inputs */
+    /* Inputs + password visibility icon */
     .stTextInput input, .stSelectbox select, .stNumberInput input, .stDateInput input {{
         background: {input_bg} !important;
         color: {text_color} !important;
         border: 1px solid {border_color} !important;
         border-radius: 9px !important;
+        font-family: 'Manrope', 'Avenir Next', sans-serif !important;
         font-size: 0.86rem;
+        box-shadow: none !important;
     }}
-    div[data-testid="stTextInput"] button {{
+    /* Keep the eye-toggle visually integrated with the password field */
+    div[data-testid="stTextInput"] button,
+    div[data-testid="stTextInput"] button[aria-label],
+    div[data-testid="stTextInput"] [data-testid*="visibilityToggle"],
+    [data-testid*="TextInput"] button[aria-label],
+    button[aria-label*="password" i] {{
         background: {input_bg} !important;
-        color: {text_color} !important;
-        border: none !important;
+        color: {sub_text} !important;
+        border: 0 !important;
+        border-left: 1px solid {border_color} !important;
+        border-radius: 0 8px 8px 0 !important;
+        box-shadow: none !important;
+        min-height: 0 !important;
+        padding: 0 0.7rem !important;
+        transform: none !important;
     }}
-    div[data-testid="stTextInput"] button svg {{
-        fill: {text_color} !important;
-        color: {text_color} !important;
+    div[data-testid="stTextInput"] button:hover,
+    div[data-testid="stTextInput"] [data-testid*="visibilityToggle"]:hover,
+    [data-testid*="TextInput"] button[aria-label]:hover,
+    button[aria-label*="password" i]:hover {{
+        background: {tab_bg} !important;
+        border-color: {border_color} !important;
+    }}
+    div[data-testid="stTextInput"] button svg,
+    div[data-testid="stTextInput"] [data-testid*="visibilityToggle"] svg,
+    [data-testid*="TextInput"] button[aria-label] svg,
+    button[aria-label*="password" i] svg {{
+        fill: none !important;
+        stroke: {sub_text} !important;
+        color: {sub_text} !important;
+        opacity: 0.9;
+    }}
+    div[data-testid="stTextInput"] button svg path,
+    div[data-testid="stTextInput"] [data-testid*="visibilityToggle"] svg path,
+    [data-testid*="TextInput"] button[aria-label] svg path,
+    button[aria-label*="password" i] svg path {{
+        fill: none !important;
+        stroke: currentColor !important;
     }}
 
     /* PDF uploader */
