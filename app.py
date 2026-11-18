@@ -114,19 +114,30 @@ st.markdown(f"""
         font-size: 0.75rem;
     }}
     
+    /* --- CENTERED TABS --- */
+    div[data-testid="stTabs"] > div[data-baseweb="tabs"] > div:first-child,
     .stTabs [data-baseweb="tab-list"] {{
-        justify-content: center;
-        gap: 4px;
-        background-color: {tab_bg};
-        padding: 4px;
-        border: 1px solid {border_color};
-        border-radius: 4px;
-        max-width: 600px;
-        margin: 0 auto;
+        display: flex !important;
+        justify-content: center !important;
+        align-items: center !important;
+        width: fit-content !important;
+        max-width: 100% !important;
+        margin-left: auto !important;
+        margin-right: auto !important;
+        gap: 4px !important;
+        background-color: {tab_bg} !important;
+        padding: 4px !important;
+        border: 1px solid {border_color} !important;
+        border-radius: 4px !important;
+    }}
+    .stTabs [data-baseweb="tab-highlight"],
+    .stTabs [data-baseweb="tab-border"] {{
+        display: none !important;
     }}
     .stTabs [data-baseweb="tab"] {{
         background-color: transparent !important;
-        border-radius: 2px;
+        border-radius: 2px !important;
+        padding: 6px 14px !important;
     }}
     .stTabs [data-baseweb="tab"] p, 
     .stTabs [data-baseweb="tab"] span, 
@@ -257,9 +268,10 @@ st.markdown(f"""
         h1 {{ font-size: 1.4rem; }}
         h3 {{ font-size: 1.1rem; }}
         h4 {{ font-size: 1rem; }}
+        div[data-testid="stTabs"] > div[data-baseweb="tabs"] > div:first-child,
         .stTabs [data-baseweb="tab-list"] {{
-            flex-wrap: wrap;
-            max-width: 100%;
+            flex-wrap: wrap !important;
+            width: 100% !important;
         }}
         .stTabs [data-baseweb="tab"] p, 
         .stTabs [data-baseweb="tab"] span, 
@@ -273,7 +285,12 @@ st.markdown(f"""
     </style>
 """, unsafe_allow_html=True)
 
-# --- INDONESIAN NUMBER FORMATTING HELPERS ---
+# --- INDONESIAN NUMBER & TIME FORMATTING HELPERS ---
+WIB_TZ = datetime.timezone(datetime.timedelta(hours=7))
+
+def get_wib_timestamp_label():
+    return datetime.datetime.now(WIB_TZ).strftime("%d-%m-%Y-%H%M%S")
+
 def fmt_int(val):
     if val is None or pd.isna(val):
         return "0"
@@ -305,7 +322,6 @@ def fmt_dec(val, decimals=2):
     f = float(val)
     sign = "-" if f < 0 else ""
     formatted = f"{abs(f):,.{decimals}f}"
-    # Swap US (1,234.56) -> ID (1.234,56)
     return sign + formatted.replace(",", "X").replace(".", ",").replace("X", ".")
 
 def fmt_pct(val, signed=False):
@@ -422,6 +438,18 @@ def sync_inv_db_from_dfs(df_port, df_trx):
     df_trx.to_sql("STOCK_TRANSACTIONS", conn, if_exists="replace", index=False)
     conn.commit()
     conn.close()
+
+def ensure_local_dbs_ready():
+    if 'dbs_hydrated' not in st.session_state:
+        df_t = load_or_seed_transact()
+        if not df_t.empty:
+            sync_work_db_from_df(df_t)
+        if not os.path.exists(INV_DB):
+            df_p = get_sheet_df("STOCK_PORTFOLIO", PORT_COLS)
+            df_x = get_sheet_df("STOCK_TRANSACTIONS", TRX_COLS)
+            if not df_p.empty or not df_x.empty:
+                sync_inv_db_from_dfs(df_p, df_x)
+        st.session_state.dbs_hydrated = True
 
 # --- PDF HELPERS ---
 def extract_pdf_text(reader):
@@ -1252,16 +1280,31 @@ with tab1:
             
             st.success(f"Sinkronisasi Google Sheets Selesai! | Transaksi Bank: {fmt_int(added_count)} (Duplikat: {fmt_int(duplicate_count)}) | Portofolio: {fmt_int(stockbit_count)} baris | Transaksi Harian: {fmt_int(stockbit_trx_count)} terekstrak")
 
+    ensure_local_dbs_ready()
+    ts_download = get_wib_timestamp_label()
+
     st.write("")
     col_dl1, col_dl2 = st.columns(2)
     with col_dl1:
         if os.path.exists(WORK_DB):
             with open(WORK_DB, "rb") as f:
-                st.download_button(label="Download DB Catatan Keuangan (.ckbak)", data=f, file_name="CK_Working.ckbak", mime="application/octet-stream", use_container_width=True)
+                st.download_button(
+                    label="Download DB Catatan Keuangan (.ckbak)",
+                    data=f,
+                    file_name=f"CK({ts_download}).ckbak",
+                    mime="application/octet-stream",
+                    use_container_width=True
+                )
     with col_dl2:
         if os.path.exists(INV_DB):
             with open(INV_DB, "rb") as f:
-                st.download_button(label="Download DB Investasi (.db)", data=f, file_name="INV_Data.db", mime="application/octet-stream", use_container_width=True)
+                st.download_button(
+                    label="Download DB Investasi (.db)",
+                    data=f,
+                    file_name=f"INV({ts_download}).db",
+                    mime="application/octet-stream",
+                    use_container_width=True
+                )
 
 # --- FUNGSI DASHBOARD KEUANGAN UTAMA (TAB 2) ---
 def render_dashboard():
