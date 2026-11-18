@@ -102,7 +102,7 @@ st.markdown(f"""
         line-height: 1.18;
         text-transform: uppercase;
         margin-top: 0.15rem;
-        margin-bottom: 0.4rem;
+        margin-bottom: 0.25rem;
     }}
 
     h3 {{
@@ -134,8 +134,8 @@ st.markdown(f"""
         font-size: 0.74rem !important;
         line-height: 1.45;
         font-weight: 600;
-        margin-top: -0.15rem;
-        margin-bottom: 0.65rem;
+        margin-top: -0.1rem;
+        margin-bottom: 0.45rem;
     }}
 
     .metric-section-label {{
@@ -157,7 +157,7 @@ st.markdown(f"""
         border: 1px solid {border_color};
         min-height: 112px;
         padding: 19px 21px;
-        border-radius: 14px;
+        border-radius: 16px;
         box-shadow: {shadow_box};
         transition: border-color 0.18s ease, transform 0.18s ease;
     }}
@@ -200,7 +200,7 @@ st.markdown(f"""
         background: {tab_bg} !important;
         padding: 5px !important;
         border: 1px solid {border_color} !important;
-        border-radius: 12px !important;
+        border-radius: 14px !important;
         box-shadow: 0 3px 12px rgba(20, 30, 45, 0.035) !important;
         border-bottom: 1px solid {border_color} !important;
     }}
@@ -220,7 +220,7 @@ st.markdown(f"""
         border: 0 !important;
         border-bottom: 0 !important;
         box-shadow: none !important;
-        border-radius: 8px !important;
+        border-radius: 10px !important;
         padding: 9px 17px !important;
         margin: 0 !important;
         min-height: 39px !important;
@@ -244,7 +244,7 @@ st.markdown(f"""
         background: {tab_active_bg} !important;
         border: 0 !important;
         border-bottom: 0 !important;
-        border-radius: 8px !important;
+        border-radius: 10px !important;
         box-shadow: 0 1px 3px rgba(20, 30, 45, 0.10) !important;
     }}
     .stApp .stTabs [aria-selected="true"] p,
@@ -265,7 +265,7 @@ st.markdown(f"""
         background: {card_bg} !important;
         color: {text_color} !important;
         border: 1px solid {border_color} !important;
-        border-radius: 9px !important;
+        border-radius: 11px !important;
         min-height: 40px;
         font-family: 'DM Sans', 'Inter', sans-serif !important;
         font-weight: 600 !important;
@@ -311,12 +311,11 @@ st.markdown(f"""
         background: {input_bg} !important;
         color: {text_color} !important;
         border: 1px solid {border_color} !important;
-        border-radius: 9px !important;
+        border-radius: 11px !important;
         font-family: 'DM Sans', 'Inter', sans-serif !important;
         font-size: 0.94rem;
         box-shadow: none !important;
     }}
-    /* Keep the eye-toggle visually integrated with the password field */
     div[data-testid="stTextInput"] button,
     div[data-testid="stTextInput"] button[aria-label],
     div[data-testid="stTextInput"] [data-testid*="visibilityToggle"],
@@ -326,7 +325,7 @@ st.markdown(f"""
         color: {sub_text} !important;
         border: 0 !important;
         border-left: 1px solid {border_color} !important;
-        border-radius: 0 8px 8px 0 !important;
+        border-radius: 0 10px 10px 0 !important;
         box-shadow: none !important;
         min-height: 0 !important;
         padding: 0 0.7rem !important;
@@ -359,7 +358,7 @@ st.markdown(f"""
     /* PDF uploader */
     div[data-testid="stFileUploader"] {{
         border: 1px solid {border_color};
-        border-radius: 12px;
+        border-radius: 14px;
         padding: 12px;
         background: {card_bg} !important;
         box-shadow: {shadow_box};
@@ -367,7 +366,7 @@ st.markdown(f"""
     div[data-testid="stFileUploader"] section {{
         background: {input_bg} !important;
         border: 1px dashed {border_color} !important;
-        border-radius: 9px !important;
+        border-radius: 11px !important;
     }}
     div[data-testid="stFileUploader"] section svg {{
         fill: {sub_text} !important;
@@ -376,7 +375,7 @@ st.markdown(f"""
     div[data-testid="stFileUploaderFile"] {{
         background: {tab_bg} !important;
         border: 1px solid {border_color} !important;
-        border-radius: 8px !important;
+        border-radius: 9px !important;
         padding: 5px 9px !important;
     }}
     div[data-testid="stFileUploaderFile"] span,
@@ -386,7 +385,7 @@ st.markdown(f"""
     }}
 
     div[data-testid="stAlert"] {{
-        border-radius: 10px;
+        border-radius: 11px;
     }}
 
     hr {{
@@ -417,7 +416,6 @@ st.markdown(f"""
         .stApp .stTabs [data-baseweb="tab"] div {{
             font-size: 0.8rem !important;
         }}
-        /* Mobile: compact vertical rhythm when Streamlit stacks columns */
         div[data-testid="stHorizontalBlock"] {{
             gap: 0.7rem !important;
             row-gap: 0.7rem !important;
@@ -431,7 +429,7 @@ st.markdown(f"""
             min-height: 0 !important;
             padding: 13px 16px !important;
             margin-bottom: 0 !important;
-            border-radius: 13px !important;
+            border-radius: 14px !important;
         }}
         div[data-testid="stMetricValue"] {{
             font-size: 1.22rem !important;
@@ -449,7 +447,7 @@ st.markdown(f"""
             margin-top: 0.8rem !important;
         }}
         .app-subtitle {{
-            margin-bottom: 0.75rem !important;
+            margin-bottom: 0.55rem !important;
             font-size: 0.68rem !important;
         }}
         .stApp [data-testid="stTabs"] [data-baseweb="tab-list"] {{
@@ -643,7 +641,6 @@ def _mult_matrix(m1, m2):
     ]
 
 def extract_pdf_visual_lines(reader):
-    """Mengekstrak teks PDF per baris visual berdasarkan koordinat (Y, X) agar kolom tabel selalu sejajar."""
     all_lines = []
     for page in reader.pages:
         fragments = []
@@ -953,7 +950,6 @@ def parse_stockbit_daily_transactions(visual_text):
     return transactions
 
 def parse_stockbit_annual_report(visual_text, raw_text):
-    """Mengekstrak riwayat dividen & snapshot portofolio 31 Desember dari Stock_Report tahunan Stockbit."""
     combined = (visual_text or "") + "\n" + (raw_text or "")
     if "TAX REPORT" not in combined.upper() or "DIVIDEND HISTORY" not in combined.upper():
         return None
@@ -1081,7 +1077,6 @@ def parse_stockbit_annual_report(visual_text, raw_text):
     }
 
 def get_bca_stockbit_cashflows(df_transact):
-    """Mengambil mutasi aktual setor/tarik RDN Stockbit dari Rekening Koran BCA (TRANSACT)."""
     if df_transact.empty:
         return []
     df = df_transact.copy()
@@ -1108,14 +1103,14 @@ def get_bca_stockbit_cashflows(df_transact):
 
 def get_category_id_v2(desc, tx_type):
     d = desc.lower()
-    if tx_type == 1: # Income
+    if tx_type == 1:
         if 'artax' in d or 'gaji' in d or 'pybca' in d: return 3
         elif 'bunga' in d or 'dividen' in d: return 2
         elif 'wd bca' in d or 'setoran' in d or 'cdm' in d or 'switching' in d or 'bi-fast cr' in d: return 41
         elif 'ftscy' in d or 'stockbit' in d or 'rdn' in d or '4994633351' in d: return 42
         elif any(name in d for name in ['laura', 'rizqi', 'jhasperi', 'joni', 'mawaddah', 'dewi', 'hidayatun']): return 7
         else: return 12
-    else: # Expense
+    else:
         if 'ftscy' in d or 'stockbit' in d or 'rdn' in d or '4994633351' in d or 'bibit' in d or 'investasi' in d: return 42
         elif 'shopeefood' in d: return 25
         elif 'tkpd' in d or 'tokopedia' in d: return 15
@@ -1171,11 +1166,11 @@ with col_head2:
 
 st.markdown("<h1>Financial Dashboard</h1>", unsafe_allow_html=True)
 st.markdown(
-    "<p class='app-subtitle'>PERSONAL FINANCE&nbsp;&nbsp;•&nbsp;&nbsp;CASH FLOW&nbsp;&nbsp;•&nbsp;&nbsp;INVESTMENTS</p>",
+    "<p class='app-subtitle'>PERSONAL FINANCE  •  CASH FLOW  •  INVESTMENTS</p>",
     unsafe_allow_html=True
 )
 
-# --- MINI DAILY COMPANION: A SMALL, PLAYFUL CHECK-IN ---
+# --- HEADER ORNAMENT: SOFT-ROUNDED CLOCK WITH PROGRESSIVE MARKET CRASH SIMULATION ---
 clock_html = f"""
 <!DOCTYPE html>
 <html>
@@ -1196,171 +1191,224 @@ clock_html = f"""
     background: transparent; color: var(--text);
     font-family: 'DM Sans', sans-serif;
   }}
-  .mini-wrap {{
+  .ornament-wrap {{
     width: 100%; display: flex; justify-content: center;
-    padding: 2px 0 5px;
+    padding: 0 0 8px;
   }}
-  .mini-bar {{
-    width: min(100%, 650px); min-height: 52px;
-    display: flex; align-items: center; gap: 12px;
-    padding: 8px 11px 8px 14px;
+  .ornament-pill {{
+    width: min(100%, 540px); min-height: 44px;
+    display: flex; align-items: center; gap: 11px;
+    padding: 6px 14px;
     border: 1px solid var(--border);
-    border-radius: 12px;
-    background: color-mix(in srgb, var(--surface) 52%, transparent);
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--surface) 58%, transparent);
+    cursor: pointer;
+    transition: background 0.28s ease, border-color 0.28s ease, transform 0.16s ease, box-shadow 0.28s ease;
+    user-select: none;
   }}
-  .clock {{
-    flex: 0 0 auto; display:flex; align-items:baseline; gap:5px;
-    padding-right: 12px; border-right: 1px solid var(--border);
-    font-size: 20px; line-height:1; font-weight:700;
-    letter-spacing:-.055em; font-variant-numeric:tabular-nums;
+  .ornament-pill:hover {{
+    border-color: var(--accent);
+    transform: translateY(-1px);
   }}
-  .tz {{ color:var(--muted); font-size:9px; font-weight:600; letter-spacing:.08em; }}
-  .message {{ min-width:0; flex:1; }}
+  .ornament-pill:active {{
+    transform: scale(0.992);
+  }}
+  .clock-badge {{
+    flex: 0 0 auto; display: flex; align-items: baseline; gap: 4px;
+    padding-right: 11px; border-right: 1px solid var(--border);
+    font-size: 16px; line-height: 1; font-weight: 700;
+    letter-spacing: -0.04em; font-variant-numeric: tabular-nums;
+    transition: color 0.28s ease, border-color 0.28s ease;
+  }}
+  .tz-tag {{
+    color: var(--muted); font-size: 8px; font-weight: 700; letter-spacing: 0.08em;
+  }}
+  .content-box {{
+    min-width: 0; flex: 1;
+  }}
   .headline {{
-    font-size:12px; line-height:1.35; font-weight:700;
-    letter-spacing:-.015em; white-space:nowrap;
-    overflow:hidden; text-overflow:ellipsis;
+    font-size: 11px; line-height: 1.3; font-weight: 700;
+    letter-spacing: -0.01em; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+    transition: color 0.28s ease;
   }}
   .subline {{
-    color:var(--muted); font-size:10px; line-height:1.35;
-    margin-top:2px; white-space:nowrap;
-    overflow:hidden; text-overflow:ellipsis;
+    color: var(--muted); font-size: 9.5px; line-height: 1.3;
+    margin-top: 1px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+    transition: color 0.28s ease;
   }}
-  .nudge {{
-    flex:0 0 auto; border:1px solid var(--border);
-    background:transparent; color:var(--muted);
-    border-radius:999px; padding:6px 9px;
-    font:600 9px 'DM Sans',sans-serif; cursor:pointer;
-    transition:all .15s ease;
+  .status-cluster {{
+    flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
   }}
-  .nudge:hover {{
-    color:var(--text); border-color:var(--accent);
-    background:var(--surface);
+  .status-tag {{
+    font-size: 8px; font-weight: 700; letter-spacing: 0.07em;
+    text-transform: uppercase; color: var(--muted);
+    transition: color 0.28s ease;
   }}
-  .nudge:active {{ transform:scale(.97); }}
+  .crash-dot {{
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #22C55E;
+    box-shadow: 0 0 6px rgba(34, 197, 94, 0.35);
+    transition: background 0.28s ease, box-shadow 0.28s ease;
+  }}
+  @keyframes pulseCrash {{
+    0%, 100% {{ opacity: 1; transform: scale(1); }}
+    50% {{ opacity: 0.45; transform: scale(1.25); }}
+  }}
+  .is-crashing .crash-dot {{
+    animation: pulseCrash 1.2s infinite ease-in-out;
+  }}
   @media(max-width:520px) {{
-    .mini-wrap {{ padding:0 0 4px; }}
-    .mini-bar {{ min-height:49px; gap:9px; padding:7px 8px 7px 11px; border-radius:10px; }}
-    .clock {{ font-size:18px; padding-right:9px; }}
-    .tz {{ font-size:8px; }}
-    .headline {{ font-size:11px; }}
-    .subline {{ font-size:9px; }}
-    .nudge {{ padding:6px 7px; font-size:8px; }}
+    .ornament-pill {{ min-height: 42px; padding: 5px 11px; border-radius: 15px; gap: 9px; }}
+    .clock-badge {{ font-size: 14.5px; padding-right: 8px; }}
+    .headline {{ font-size: 10.5px; }}
+    .subline {{ font-size: 8.5px; }}
+    .status-tag {{ display: none; }}
   }}
 </style>
 </head>
 <body>
-<div class="mini-wrap">
-  <div class="mini-bar">
-    <div class="clock"><span id="clock">--:--</span><span class="tz">WIB</span></div>
-    <div class="message">
+<div class="ornament-wrap">
+  <div class="ornament-pill" id="pill" onclick="cycleMarketMood()" title="Click to stress-test market mood">
+    <div class="clock-badge" id="clockBox"><span id="clock">--:--</span><span class="tz-tag">WIB</span></div>
+    <div class="content-box">
       <div class="headline" id="headline">Getting the day together...</div>
       <div class="subline" id="subline">A small check-in, nothing more.</div>
     </div>
-    <button class="nudge" id="nudge" onclick="nextLine()">One more</button>
+    <div class="status-cluster">
+      <span class="status-tag" id="statusTag">LIVE</span>
+      <span class="crash-dot" id="dot"></span>
+    </div>
   </div>
 </div>
 <script>
   const fmt = (opts) => new Intl.DateTimeFormat('id-ID', {{ timeZone:'Asia/Jakarta', ...opts }});
-  let currentJokes = [];
-  let jokeIndex = 0;
+  let crashLevel = 0;
 
-  function getMoment() {{
+  function getScheduleMoment() {{
     const parts = Object.fromEntries(fmt({{hour:'2-digit', minute:'2-digit', hourCycle:'h23'}})
-      .formatToParts(new Date()).map(p => [p.type,p.value]));
+      .formatToParts(new Date()).map(p => [p.type, p.value]));
     const h = Number(parts.hour), m = Number(parts.minute);
     const weekday = fmt({{weekday:'short'}}).format(new Date()).toLowerCase();
     const weekend = weekday.startsWith('sab') || weekday.startsWith('min');
 
     if (weekend) return {{
       title: 'Market is off. Lu juga boleh.',
-      sub: 'Weekend mode. No need to turn everything into a productivity project.',
-      jokes: [
-        'The portfolio is not going anywhere. Hopefully.',
-        'No market today. The only thing to monitor is your coffee.',
-        'Rest is also an asset. Please stop trying to optimize it.'
-      ]
+      sub: 'Weekend mode. Click ornament to simulate market turbulence.'
     }};
     if (h < 9) return {{
       title: '09.00 is coming. So is the coffee, hopefully.',
-      sub: 'Office starts, market opens. Let’s not make both a dramatic event.',
-      jokes: [
-        'A fresh start. Same passwords, same spreadsheets.',
-        'You can be ambitious after breakfast too.',
-        'The market opens at nine. Your brain may need a little longer.'
-      ]
+      sub: 'Pre-market calm. Click ornament to test your composure.'
     }};
     if (h < 12) return {{
       title: 'Market is open. Behave yourself.',
-      sub: 'Check the numbers, not every five seconds.',
-      jokes: [
-        'A red candle is not a personal attack.',
-        'Long-term investor, short-term screen time. Interesting.',
-        'You said you were investing, not adopting every ticker.'
-      ]
+      sub: 'Session I active. Click to simulate a sudden pullback.'
     }};
     if (h < 13 || (h === 13 && m < 30)) return {{
       title: 'Go eat. The market can wait.',
-      sub: 'Lunch break. Your portfolio has survived without you before.',
-      jokes: [
-        'Asset allocation is important. So is lunch allocation.',
-        'No financial decision needs to be made while hungry.',
-        'Please diversify your lunch, not just your portfolio.'
-      ]
+      sub: 'Midday break. No financial decision needs to be made while hungry.'
     }};
     if (h < 16) return {{
       title: 'Afternoon session. Keep it together.',
-      sub: 'Finish what matters. The rest can join tomorrow’s agenda.',
-      jokes: [
-        'You do not get bonus points for worrying early.',
-        'One spreadsheet at a time. You are not the whole finance department.',
-        'Almost there. Try not to open seventeen new tabs.'
-      ]
+      sub: 'Session II active. Click to stress-test market mood.'
     }};
     if (h < 19) return {{
       title: 'Market closed. Lu boleh ikut tutup laptop.',
-      sub: 'Workday is winding down. The rest of your life is still open.',
-      jokes: [
-        'Your inbox will still be there tomorrow. Unfortunately.',
-        'Clock out before you start reviewing your life performance.',
-        'Today’s closing price: enough work done.'
-      ]
+      sub: 'Today’s closing price: enough work done.'
     }};
     return {{
       title: 'Portfolio can wait. Life is happening.',
-      sub: 'No need to figure everything out tonight.',
-      jokes: [
-        'The market is closed. Maybe close a few tabs too.',
-        'You have checked the portfolio. It has not developed new feelings.',
-        'Tomorrow has its own problems. Let it have them.'
-      ]
+      sub: 'After hours. Click if you miss watching red candles.'
     }};
+  }}
+
+  const crashStates = [
+    null, // Level 0 uses live schedule moment
+    {{
+      title: '-2.4%  —  Mild pullback. Nothing dramatic.',
+      sub: 'A red candle is not a personal attack. Stay disciplined.',
+      tag: '-2.4%',
+      textColor: '#D97706',
+      borderColor: 'rgba(217, 119, 6, 0.42)',
+      bgColor: 'rgba(217, 119, 6, 0.06)',
+      dotColor: '#D97706',
+      glow: 'rgba(217, 119, 6, 0.45)',
+      crashing: false
+    }},
+    {{
+      title: '-6.8%  —  Heavy sell-off. Screen turning crimson.',
+      sub: 'Long-term investor, short-term screen time. Interesting.',
+      tag: '-6.8%',
+      textColor: '#E11D48',
+      borderColor: 'rgba(225, 29, 72, 0.55)',
+      bgColor: 'rgba(225, 29, 72, 0.10)',
+      dotColor: '#E11D48',
+      glow: 'rgba(225, 29, 72, 0.55)',
+      crashing: false
+    }},
+    {{
+      title: '-14.2%  —  Market crash. Trading halt territory.',
+      sub: 'Close the laptop. Your portfolio has not developed new feelings.',
+      tag: 'CRASH',
+      textColor: '#DC2626',
+      borderColor: 'rgba(220, 38, 38, 0.78)',
+      bgColor: 'rgba(220, 38, 38, 0.16)',
+      dotColor: '#DC2626',
+      glow: 'rgba(220, 38, 38, 0.75)',
+      crashing: true
+    }}
+  ];
+
+  function renderState() {{
+    const pill = document.getElementById('pill');
+    const clockBox = document.getElementById('clockBox');
+    const headline = document.getElementById('headline');
+    const subline = document.getElementById('subline');
+    const statusTag = document.getElementById('statusTag');
+    const dot = document.getElementById('dot');
+
+    if (crashLevel === 0) {{
+      const moment = getScheduleMoment();
+      pill.classList.remove('is-crashing');
+      pill.style.borderColor = '';
+      pill.style.background = '';
+      clockBox.style.color = '';
+      headline.style.color = '';
+      headline.textContent = moment.title;
+      subline.textContent = moment.sub;
+      statusTag.style.color = '';
+      statusTag.textContent = 'LIVE';
+      dot.style.background = '#22C55E';
+      dot.style.boxShadow = '0 0 6px rgba(34, 197, 94, 0.35)';
+    }} else {{
+      const s = crashStates[crashLevel];
+      pill.classList.toggle('is-crashing', s.crashing);
+      pill.style.borderColor = s.borderColor;
+      pill.style.background = s.bgColor;
+      clockBox.style.color = s.textColor;
+      headline.style.color = s.textColor;
+      headline.textContent = s.title;
+      subline.textContent = s.sub;
+      statusTag.style.color = s.textColor;
+      statusTag.textContent = s.tag;
+      dot.style.background = s.dotColor;
+      dot.style.boxShadow = `0 0 8px ${{s.glow}}`;
+    }}
   }}
 
   function updateClock() {{
     const parts = Object.fromEntries(fmt({{hour:'2-digit', minute:'2-digit', hourCycle:'h23'}})
-      .formatToParts(new Date()).map(p => [p.type,p.value]));
+      .formatToParts(new Date()).map(p => [p.type, p.value]));
     document.getElementById('clock').textContent = `${{parts.hour}}:${{parts.minute}}`;
-
-    const moment = getMoment();
-    const headline = document.getElementById('headline');
-    const subline = document.getElementById('subline');
-    if (headline.dataset.period !== moment.title) {{
-      headline.dataset.period = moment.title;
-      headline.textContent = moment.title;
-      subline.textContent = moment.sub;
-      currentJokes = moment.jokes;
-      jokeIndex = 0;
-      document.getElementById('nudge').textContent = 'One more';
+    if (crashLevel === 0) {{
+      renderState();
     }}
   }}
 
-  function nextLine() {{
-    if (!currentJokes.length) return;
-    const subline = document.getElementById('subline');
-    subline.textContent = currentJokes[jokeIndex % currentJokes.length];
-    jokeIndex++;
-    document.getElementById('nudge').textContent = jokeIndex % currentJokes.length === 0 ? 'Again' : 'Next';
+  function cycleMarketMood() {{
+    crashLevel = (crashLevel + 1) % crashStates.length;
+    renderState();
   }}
 
   updateClock();
@@ -1369,7 +1417,7 @@ clock_html = f"""
 </body>
 </html>
 """
-components.html(clock_html, height=66, scrolling=False)
+components.html(clock_html, height=54, scrolling=False)
 
 tab1, tab2, tab3 = st.tabs(["Konversi PDF", "Dashboard", "Investasi"])
 
