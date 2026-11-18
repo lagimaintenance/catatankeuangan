@@ -88,7 +88,7 @@ st.markdown(f"""
     div[data-testid="stAppViewContainer"] .main .block-container,
     section.main > div.block-container {{
         max-width: 1440px !important;
-        padding-top: 0.95rem !important;
+        padding-top: 0.85rem !important;
         padding-bottom: 2.5rem !important;
     }}
 
@@ -101,7 +101,7 @@ st.markdown(f"""
         letter-spacing: -0.025em;
         line-height: 1.18;
         text-transform: uppercase;
-        margin-top: 0.15rem;
+        margin-top: 0.05rem;
         margin-bottom: 0.25rem;
     }}
 
@@ -135,7 +135,7 @@ st.markdown(f"""
         line-height: 1.45;
         font-weight: 600;
         margin-top: -0.1rem;
-        margin-bottom: 0.45rem;
+        margin-bottom: 0.65rem;
     }}
 
     .metric-section-label {{
@@ -525,8 +525,49 @@ PORT_COLS = [
 ]
 TRX_COLS = ['period_str', 'date_str', 'category', 'description', 'amount']
 
-if not os.path.exists(WORK_DB) and os.path.exists(BASE_DB):
-    shutil.copyfile(BASE_DB, WORK_DB)
+DEFAULT_CATEGORIES = [
+    (1, 'Gaji', 1), (2, 'Dividen / Bunga', 1), (3, 'Gaji', 1),
+    (7, 'Pengembalian Dana', 1), (12, 'Lain-lain', 1),
+    (15, 'Belanja', 0), (19, 'Hadiah', 0), (21, 'Hiburan', 0),
+    (24, 'Kesehatan', 0), (25, 'Makanan & Minuman', 0), (30, 'Pakaian', 0),
+    (33, 'Rumah', 0), (35, 'Tagihan', 0), (37, 'Pulsa & Data', 0),
+    (38, 'Transportasi', 0), (39, 'Lain-lain', 0),
+    (41, 'Penyesuaian Pemasukan', 1), (42, 'Investasi', 0),
+    (45, 'Penampilan', 0), (46, 'Kartu Kredit', 0)
+]
+
+def init_working_db_file():
+    if os.path.exists(BASE_DB):
+        shutil.copyfile(BASE_DB, WORK_DB)
+        return
+    conn = sqlite3.connect(WORK_DB)
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS android_metadata (locale TEXT);")
+    cur.execute("DELETE FROM android_metadata;")
+    cur.execute("INSERT INTO android_metadata (locale) VALUES ('in_ID');")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS CATEGORY (
+            _id INTEGER PRIMARY KEY AUTOINCREMENT,
+            NAME TEXT,
+            TYPE INTEGER
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS TRANSACT (
+            _id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id_category INTEGER,
+            desc TEXT,
+            type INTEGER,
+            date INTEGER,
+            amount TEXT
+        );
+    """)
+    cur.executemany("INSERT OR IGNORE INTO CATEGORY (_id, NAME, TYPE) VALUES (?, ?, ?)", DEFAULT_CATEGORIES)
+    conn.commit()
+    conn.close()
+
+if not os.path.exists(WORK_DB):
+    init_working_db_file()
 
 conn_gsheets = st.connection("gsheets", type=GSheetsConnection)
 
@@ -580,29 +621,109 @@ def load_or_seed_transact():
             return df_local
     return df_gs
 
-def sync_work_db_from_df(df_transact):
-    if not os.path.exists(WORK_DB) or df_transact.empty:
+def optimize_sqlite_for_android(db_path):
+    if not os.path.exists(db_path):
         return
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    # Pastikan sqlite_sequence sinkron dengan MAX(_id) pada setiap tabel autoincrement
+    has_seq = cur.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_sequence';"
+    ).fetchone()
+    if has_seq:
+        for tbl in ('TRANSACT', 'CATEGORY'):
+            tbl_exists = cur.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?;", (tbl,)
+            ).fetchone()
+            if tbl_exists:
+                max_id = cur.execute(f"SELECT COALESCE(MAX(_id), 0) FROM {tbl};").fetchone()[0]
+                updated = cur.execute(
+                    "UPDATE sqlite_sequence SET seq = ? WHERE name = ?;", (int(max_id), tbl)
+                ).rowcount
+                if updated == 0 and int(max_id) > 0:
+                    cur.execute(
+                        "INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?);", (tbl, int(max_id))
+                    )
+    cur.execute("REINDEX;")
+    cur.execute("ANALYZE;")
+    conn.commit()
+    conn.close()
+
+    # Jalankan journal_mode=DELETE & VACUUM di luar blok transaksi aktif
+    conn_vac = sqlite3.connect(db_path, isolation_level=None)
+    cur_vac = conn_vac.cursor()
+    cur_vac.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    cur_vac.execute("PRAGMA journal_mode = DELETE;")
+    cur_vac.execute("VACUUM;")
+    conn_vac.close()
+
+def sync_work_db_from_df(df_transact):
+    if not os.path.exists(WORK_DB):
+        init_working_db_file()
+    if df_transact.empty:
+        optimize_sqlite_for_android(WORK_DB)
+        return
+
     conn = get_bank_connection()
     cursor = conn.cursor()
+    valid_cats = {
+        int(row[0])
+        for row in cursor.execute("SELECT _id FROM CATEGORY;").fetchall()
+        if row[0] is not None
+    }
+
+    df_clean = df_transact.copy()
+    df_clean['_id_num'] = pd.to_numeric(df_clean['_id'], errors='coerce').fillna(0).astype(int)
+    df_clean['date_num'] = pd.to_numeric(df_clean['date'], errors='coerce').fillna(0).astype('int64')
+    df_clean = df_clean[df_clean['date_num'] > 0].sort_values(by=['date_num', '_id_num'], ascending=[True, True])
+
+    used_ids = set()
+    next_fallback_id = int(df_clean['_id_num'].max()) + 1 if not df_clean.empty else 1
+    rows = []
+
+    for _, r in df_clean.iterrows():
+        raw_id = int(r['_id_num'])
+        if raw_id <= 0 or raw_id in used_ids:
+            raw_id = next_fallback_id
+            next_fallback_id += 1
+        used_ids.add(raw_id)
+
+        tx_type = int(pd.to_numeric(r['type'], errors='coerce') or 0)
+        tx_type = 1 if tx_type == 1 else 0
+
+        cat_id = int(pd.to_numeric(r['id_category'], errors='coerce') or 0)
+        if valid_cats and cat_id not in valid_cats:
+            fallback_cat = 12 if tx_type == 1 else 39
+            cat_id = fallback_cat if fallback_cat in valid_cats else next(iter(valid_cats))
+
+        desc_raw = "" if pd.isna(r['desc']) else str(r['desc'])
+        desc_clean = re.sub(r'[\x00-\x1f\x7f]+', ' ', desc_raw).strip() or "transaksi"
+
+        amt_val = pd.to_numeric(r['amount'], errors='coerce')
+        amt_str = str(int(round(abs(float(amt_val))))) if pd.notna(amt_val) else "0"
+
+        rows.append((raw_id, cat_id, desc_clean, tx_type, int(r['date_num']), amt_str))
+
     cursor.execute("DELETE FROM TRANSACT;")
-    rows = [
-        (
-            int(float(r['_id'])),
-            int(float(r['id_category'])),
-            str(r['desc']),
-            int(float(r['type'])),
-            int(float(r['date'])),
-            str(int(round(float(r['amount']))))
-        )
-        for _, r in df_transact.iterrows()
-    ]
     cursor.executemany(
         "INSERT INTO TRANSACT (_id, id_category, desc, type, date, amount) VALUES (?, ?, ?, ?, ?, ?)",
         rows
     )
     conn.commit()
     conn.close()
+
+    optimize_sqlite_for_android(WORK_DB)
+
+def build_ckbak_download_bytes():
+    df_t = load_or_seed_transact()
+    if not df_t.empty:
+        sync_work_db_from_df(df_t)
+    elif os.path.exists(WORK_DB):
+        optimize_sqlite_for_android(WORK_DB)
+    else:
+        return None
+    with open(WORK_DB, "rb") as f:
+        return f.read()
 
 def sync_inv_db_from_dfs(df_port, df_trx):
     conn = sqlite3.connect(INV_DB)
@@ -1156,21 +1277,7 @@ def clean_desc_v3(text):
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 
-# --- HEADER & TOGGLE TEMA ---
-col_head1, col_head2 = st.columns([10, 1])
-with col_head2:
-    toggle_label = "☾" if st.session_state.theme == 'Light' else "☀"
-    if st.button(toggle_label, help="Ganti tema terang / gelap"):
-        st.session_state.theme = 'Dark' if st.session_state.theme == 'Light' else 'Light'
-        st.rerun()
-
-st.markdown("<h1>Financial Dashboard</h1>", unsafe_allow_html=True)
-st.markdown(
-    "<p class='app-subtitle'>PERSONAL FINANCE  •  CASH FLOW  •  INVESTMENTS</p>",
-    unsafe_allow_html=True
-)
-
-# --- HEADER ORNAMENT: SOFT-ROUNDED CLOCK WITH PROGRESSIVE MARKET CRASH SIMULATION ---
+# --- HEADER BAR: ORNAMEN JAM DI PALING ATAS + TOGGLE TEMA ---
 clock_html = f"""
 <!DOCTYPE html>
 <html>
@@ -1187,13 +1294,18 @@ clock_html = f"""
   }}
   * {{ box-sizing: border-box; }}
   html, body {{
-    margin: 0; padding: 0; width: 100%;
+    margin: 0; padding: 0; width: 100%; overflow: hidden;
     background: transparent; color: var(--text);
     font-family: 'DM Sans', sans-serif;
   }}
   .ornament-wrap {{
     width: 100%; display: flex; justify-content: center;
-    padding: 0 0 8px;
+    padding: 2px 0 4px;
+  }}
+  @media (min-width: 769px) {{
+    .ornament-wrap {{
+      padding-left: 9%;
+    }}
   }}
   .ornament-pill {{
     width: min(100%, 540px); min-height: 44px;
@@ -1203,7 +1315,7 @@ clock_html = f"""
     border-radius: 18px;
     background: color-mix(in srgb, var(--surface) 58%, transparent);
     cursor: pointer;
-    transition: background 0.28s ease, border-color 0.28s ease, transform 0.16s ease, box-shadow 0.28s ease;
+    transition: background 0.28s ease, border-color 0.28s ease, transform 0.16s ease;
     user-select: none;
   }}
   .ornament-pill:hover {{
@@ -1270,7 +1382,7 @@ clock_html = f"""
 </head>
 <body>
 <div class="ornament-wrap">
-  <div class="ornament-pill" id="pill" onclick="cycleMarketMood()" title="Click to stress-test market mood">
+  <div class="ornament-pill" id="pill" onclick="cycleMarketMood()" title="Click to toggle market mood">
     <div class="clock-badge" id="clockBox"><span id="clock">--:--</span><span class="tz-tag">WIB</span></div>
     <div class="content-box">
       <div class="headline" id="headline">Getting the day together...</div>
@@ -1295,23 +1407,23 @@ clock_html = f"""
 
     if (weekend) return {{
       title: 'Market is off. Lu juga boleh.',
-      sub: 'Weekend mode. Click ornament to simulate market turbulence.'
+      sub: 'A small check-in, nothing more.'
     }};
     if (h < 9) return {{
       title: '09.00 is coming. So is the coffee, hopefully.',
-      sub: 'Pre-market calm. Click ornament to test your composure.'
+      sub: 'Pre-market calm.'
     }};
     if (h < 12) return {{
       title: 'Market is open. Behave yourself.',
-      sub: 'Session I active. Click to simulate a sudden pullback.'
+      sub: 'Session I active.'
     }};
     if (h < 13 || (h === 13 && m < 30)) return {{
       title: 'Go eat. The market can wait.',
-      sub: 'Midday break. No financial decision needs to be made while hungry.'
+      sub: 'No financial decision needs to be made while hungry.'
     }};
     if (h < 16) return {{
       title: 'Afternoon session. Keep it together.',
-      sub: 'Session II active. Click to stress-test market mood.'
+      sub: 'Session II active.'
     }};
     if (h < 19) return {{
       title: 'Market closed. Lu boleh ikut tutup laptop.',
@@ -1319,12 +1431,12 @@ clock_html = f"""
     }};
     return {{
       title: 'Portfolio can wait. Life is happening.',
-      sub: 'After hours. Click if you miss watching red candles.'
+      sub: 'After hours.'
     }};
   }}
 
   const crashStates = [
-    null, // Level 0 uses live schedule moment
+    null,
     {{
       title: '-2.4%  —  Mild pullback. Nothing dramatic.',
       sub: 'A red candle is not a personal attack. Stay disciplined.',
@@ -1417,7 +1529,21 @@ clock_html = f"""
 </body>
 </html>
 """
-components.html(clock_html, height=54, scrolling=False)
+
+col_head1, col_head2 = st.columns([10, 1])
+with col_head1:
+    components.html(clock_html, height=52, scrolling=False)
+with col_head2:
+    toggle_label = "☾" if st.session_state.theme == 'Light' else "☀"
+    if st.button(toggle_label, help="Ganti tema terang / gelap"):
+        st.session_state.theme = 'Dark' if st.session_state.theme == 'Light' else 'Light'
+        st.rerun()
+
+st.markdown("<h1>Financial Dashboard</h1>", unsafe_allow_html=True)
+st.markdown(
+    "<p class='app-subtitle'>PERSONAL FINANCE  •  CASH FLOW  •  INVESTMENTS</p>",
+    unsafe_allow_html=True
+)
 
 tab1, tab2, tab3 = st.tabs(["Konversi PDF", "Dashboard", "Investasi"])
 
@@ -1702,29 +1828,30 @@ with tab1:
 
     ensure_local_dbs_ready()
     ts_download = get_wib_timestamp_label()
+    ckbak_bytes = build_ckbak_download_bytes()
 
     st.write("")
     col_dl1, col_dl2 = st.columns(2)
     with col_dl1:
-        if os.path.exists(WORK_DB):
-            with open(WORK_DB, "rb") as f:
-                st.download_button(
-                    label="Download DB Catatan Keuangan (.ckbak)",
-                    data=f,
-                    file_name=f"CK({ts_download}).ckbak",
-                    mime="application/octet-stream",
-                    use_container_width=True
-                )
+        if ckbak_bytes is not None:
+            st.download_button(
+                label="Download DB Catatan Keuangan (.ckbak)",
+                data=ckbak_bytes,
+                file_name=f"CK({ts_download}).ckbak",
+                mime="application/octet-stream",
+                use_container_width=True
+            )
     with col_dl2:
         if os.path.exists(INV_DB):
             with open(INV_DB, "rb") as f:
-                st.download_button(
-                    label="Download DB Investasi (.db)",
-                    data=f,
-                    file_name=f"INV({ts_download}).db",
-                    mime="application/octet-stream",
-                    use_container_width=True
-                )
+                inv_bytes = f.read()
+            st.download_button(
+                label="Download DB Investasi (.db)",
+                data=inv_bytes,
+                file_name=f"INV({ts_download}).db",
+                mime="application/octet-stream",
+                use_container_width=True
+            )
 
 # --- FUNGSI DASHBOARD KEUANGAN UTAMA (TAB 2) ---
 def render_dashboard():
