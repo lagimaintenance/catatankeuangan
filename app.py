@@ -380,24 +380,22 @@ def parse_stockbit_portfolio(text, period_str):
         port_text,
         flags=re.DOTALL | re.IGNORECASE
     )
-    # Potong bagian ledger header di atas tabel saham jika ada (kolom header tabel saham dimulai dari 'Stocks')
+    # Potong bagian ledger header di atas tabel saham jika ada
     if re.search(r'\bStocks\b', port_text):
         port_text = re.split(r'\bStocks\b', port_text, maxsplit=1)[1]
     # Potong baris TOTAL di akhir tabel saham
     port_text = re.split(r'\bTOTAL\b', port_text, maxsplit=1)[0]
     port_text = port_text.replace('|', ' ')
 
-    # Cari semua kandidat kode saham (4 huruf kapital atau IDR) tanpa bergantung pada posisi awal baris (^)
     excluded_words = {'DATE', 'PAGE', 'TGL:', 'TBK.', 'BANK', 'CASH', 'DAYS', 'SELL', 'OPEN', 'HIGH', 'GAIN', 'LOSS', 'NOTE', 'SPEC'}
     raw_matches = [
         m for m in re.finditer(r'\b([A-Z]{4}|IDR)\b', port_text)
         if m.group(1) not in excluded_words
     ]
 
-    # Filter kata 4-huruf yang merupakan bagian nama emiten (misal 'ASIA' dalam 'WIR ASIA Tbk.'),
-    # karena dua emiten berbeda selalu dipisahkan oleh 7–8 angka data portofolio.
+    # Filter kata 4-huruf yang merupakan bagian nama emiten (misal 'ASIA' dalam 'WIR ASIA Tbk.')
     ticker_matches = []
-    for idx, m in enumerate(raw_matches):
+    for m in raw_matches:
         if not ticker_matches:
             ticker_matches.append(m)
         else:
@@ -420,11 +418,16 @@ def parse_stockbit_portfolio(text, period_str):
             last_price = float(tail[1].replace(',', ''))
             buy_value = float(tail[2].replace(',', ''))
             market_value = float(tail[3].replace(',', ''))
-            unrealized_rp = float(tail[4].replace(',', ''))
-            unrealized_pct = float(tail[5].replace(',', ''))
+            val_a = float(tail[4].replace(',', ''))
+            val_b = float(tail[5].replace(',', ''))
 
-            # Validasi matematis: Market Value - Buying Value == Unrealized Gain/Loss (Rp)
-            if abs((market_value - buy_value) - unrealized_rp) > 5:
+            # pypdf kadang menukar urutan kolom Unrealized (Rp.) dan (%) antar baris
+            expected_unreal = market_value - buy_value
+            if abs(val_a - expected_unreal) <= 5:
+                unrealized_rp, unrealized_pct = val_a, val_b
+            elif abs(val_b - expected_unreal) <= 5:
+                unrealized_rp, unrealized_pct = val_b, val_a
+            else:
                 continue
 
             prefix_nums = [float(x.replace(',', '')) for x in nums[:-6]]
@@ -456,13 +459,12 @@ def parse_stockbit_portfolio(text, period_str):
 def _extract_ledger_cash_entries(text):
     """Mengekstrak mutasi kas (Setoran/Receipt 'R' & Penarikan/Payment 'P') dari tabel ledger Stockbit SoA."""
     entries = []
-    # Gabungkan baris lanjutan yang tidak diawali tanggal dd/mm/yyyy
     raw_lines = [re.sub(r'\s+', ' ', line).strip() for line in (text or '').splitlines() if line.strip()]
     merged_lines = []
     for line in raw_lines:
         if re.match(r'^\d{2}/\d{2}/\d{4}\s+\d{2}/\d{2}/\d{4}\b', line):
             merged_lines.append(line)
-        elif merged_lines and not re.match(r'^(?:PORTFOLIO|Stocks|TOTAL|Total\s*-|Tr\.\s*Date)', line, re.IGNORECASE):
+        elif merged_lines and not re.match(r'^(?:PORTFOLIO|Stocks|TOTAL|Total\s*-|Tr\.\s*Date|Bank\s*/\s*Currency)', line, re.IGNORECASE):
             merged_lines[-1] += ' ' + line
 
     number_re = re.compile(r'\(?-?[\d,]+(?:\.\d+)?\)?')
@@ -474,7 +476,6 @@ def _extract_ledger_cash_entries(text):
             continue
         tr_date, _, rest = row_match.groups()
 
-        # Lewati baris header transaksi saham ('Trx on ...'), bunga estimasi ('ZZ'), dan saldo awal
         if re.search(r'\b(?:Trx on|Beginning Balance|Estimated Interest)\b', rest, re.IGNORECASE):
             continue
 
@@ -493,18 +494,19 @@ def _extract_ledger_cash_entries(text):
             continue
 
         body = ' '.join(tokens).strip()
-        # Deteksi kode mutasi kas R (Receipt/Setoran) atau P (Payment/Penarikan), baik sebelum maupun sesudah nomor ref
-        is_receipt = bool(re.match(r'^(?:R\s+\S+|\d{5,8}\s+R)\b', body, re.IGNORECASE)) or bool(re.search(r'\bReceipt\s+From:', body, re.IGNORECASE))
+        is_receipt = bool(re.match(r'^(?:R\s+\S+|\d{5,8}\s+R)\b', body, re.IGNORECASE)) or bool(re.search(r'\b(?:Receipt\s+From:|Inv:\d+)\b', body, re.IGNORECASE))
         is_payment = bool(re.match(r'^(?:P\s+\S+|\d{5,8}\s+P)\b', body, re.IGNORECASE)) or bool(re.search(r'\bPayment\s+to:', body, re.IGNORECASE))
 
         if is_receipt and credit and credit > 0:
             clean_desc = re.sub(r'^(?:R\s+\S+|\d{5,8}\s+R)\s*', '', body, flags=re.IGNORECASE).strip()
-            key = (tr_date, 'Setoran', round(float(credit), 2), clean_desc.casefold())
+            # 'Setoran' = transfer dari rekening bank luar; 'Setoran RDN' = auto-debet invoice dari saldo RDN
+            cat_name = 'Setoran RDN' if re.search(r'\bInv:\d+\b', clean_desc, re.IGNORECASE) else 'Setoran'
+            key = (tr_date, cat_name, round(float(credit), 2), clean_desc.casefold())
             if key not in seen:
                 seen.add(key)
                 entries.append({
                     'date_str': tr_date,
-                    'category': 'Setoran',
+                    'category': cat_name,
                     'description': clean_desc or 'Receipt From RDN',
                     'amount': round(float(credit), 2)
                 })
@@ -523,7 +525,6 @@ def _extract_ledger_cash_entries(text):
 
 def parse_stockbit_daily_transactions(text):
     transactions = []
-    current_trade_date = None
     seen = set()
     lines = [re.sub(r'\s+', ' ', line).strip() for line in (text or '').splitlines()]
     number_re = re.compile(r'\(?-?[\d,]+(?:\.\d+)?\)?')
@@ -568,12 +569,10 @@ def parse_stockbit_daily_transactions(text):
             'amount': round(abs(float(amount)), 2),
         })
 
-    # Tambahkan setoran & penarikan kas dari helper terpadu
     for cash_item in _extract_ledger_cash_entries(text):
-        cat_label = 'Setoran Kas' if cash_item['category'] == 'Setoran' else 'Penarikan Kas'
+        cat_label = 'Penarikan Kas' if cash_item['category'] == 'Penarikan' else 'Setoran Kas'
         add(cash_item['date_str'], cat_label, cash_item['description'], cash_item['amount'])
 
-    # Mendukung pemisah '=' maupun '-' yang kadang dihasilkan ekstraksi pypdf
     stock_detail_re = re.compile(
         r'(?P<ref>\d{5,8})\s+(?P<side>[BS]):\s*RG\s+'
         r'(?P<symbol>[A-Z0-9]{3,5})\s+(?P<qty>[\d,]+)\s*@\s*'
@@ -581,44 +580,64 @@ def parse_stockbit_daily_transactions(text):
         re.IGNORECASE,
     )
 
+    # Gabungkan detail sub-baris di bawah setiap 'Trx on DD/MM/YYYY' agar angka terpotong newline tetap terbaca
+    current_trade_date = None
+    trade_buffer = []
+
+    def flush_trade_buffer(t_date, buf_lines):
+        if not t_date or not buf_lines:
+            return
+        joined = ' '.join(buf_lines)
+        for m in stock_detail_re.finditer(joined):
+            d = m.groupdict()
+            category = 'Beli' if d['side'].upper() == 'B' else 'Jual'
+            description = (
+                f"{category} saham {d['symbol'].upper()} — {int(d['qty'].replace(',', '')):,} lembar "
+                f"@ Rp {_soa_number(d['price']):,.4f} (Ref {d['ref']})"
+            )
+            add(t_date, category, description, _soa_number(d['amount']))
+
     for line in lines:
         if not line:
             continue
         invoice_match = re.search(r'\bTrx on (\d{2}/\d{2}/\d{4})\b', line, re.IGNORECASE)
         if invoice_match:
+            flush_trade_buffer(current_trade_date, trade_buffer)
             current_trade_date = invoice_match.group(1)
+            trade_buffer = []
             continue
 
         row_match = re.match(r'^(\d{2}/\d{2}/\d{4})\s+(\d{2}/\d{2}/\d{4})\s+(.*)$', line)
         if row_match:
-            tr_date, due_date, rest = row_match.groups()
+            flush_trade_buffer(current_trade_date, trade_buffer)
             current_trade_date = None
+            trade_buffer = []
+            tr_date, _, rest = row_match.groups()
 
             if re.search(r'^J\s+\S+\s+SELL\s+(?:FR|PBS)\d+', rest, re.IGNORECASE):
-                db_amount, cr_amount = ledger_amounts(line)
+                _, cr_amount = ledger_amounts(line)
                 amount = cr_amount if cr_amount and cr_amount > 0 else None
                 description = ledger_fields(line)[2].strip()
                 add(tr_date, 'Jual Obligasi', description, amount)
                 continue
 
             if re.search(r'^D\s+\S+\s+.*(bond interest|dividend|dividen)', rest, re.IGNORECASE):
-                db_amount, cr_amount = ledger_amounts(line)
+                _, cr_amount = ledger_amounts(line)
                 amount = cr_amount if cr_amount and cr_amount > 0 else None
                 category = 'Dividen' if re.search(r'dividend|dividen', rest, re.IGNORECASE) else 'Bunga Obligasi'
                 description = ledger_fields(line)[2].strip()
                 add(tr_date, category, description, amount)
                 continue
 
-        detail_match = stock_detail_re.search(line)
-        if detail_match and current_trade_date:
-            d = detail_match.groupdict()
-            category = 'Beli' if d['side'].upper() == 'B' else 'Jual'
-            description = (
-                f"{category} saham {d['symbol'].upper()} — {int(d['qty'].replace(',', '')):,} lembar "
-                f"@ Rp {_soa_number(d['price']):,.4f} (Ref {d['ref']})"
-            )
-            add(current_trade_date, category, description, _soa_number(d['amount']))
+        if current_trade_date:
+            if re.match(r'^(?:TOTAL|Total\s*-|PORTFOLIO|Bank\s*/\s*Currency)', line, re.IGNORECASE):
+                flush_trade_buffer(current_trade_date, trade_buffer)
+                current_trade_date = None
+                trade_buffer = []
+            else:
+                trade_buffer.append(line)
 
+    flush_trade_buffer(current_trade_date, trade_buffer)
     return transactions
 
 def parse_stockbit_soa_cashflows(text):
@@ -626,8 +645,8 @@ def parse_stockbit_soa_cashflows(text):
     for item in _extract_ledger_cash_entries(text):
         dt = datetime.datetime.strptime(item['date_str'], '%d/%m/%Y')
         ts = int(dt.timestamp() * 1000)
-        # Konvensi XIRR: Setoran ke RDN = negatif (-), Penarikan dari RDN = positif (+)
-        signed_amt = -abs(item['amount']) if item['category'] == 'Setoran' else abs(item['amount'])
+        # Konvensi XIRR: Setoran modal = negatif (-), Penarikan = positif (+)
+        signed_amt = abs(item['amount']) if item['category'] == 'Penarikan' else -abs(item['amount'])
         cashflows.append({
             'date_str': item['date_str'],
             'timestamp': ts,
@@ -695,6 +714,11 @@ def reconcile_transactions():
     if df_transact.empty or df_sb.empty:
         return None
     
+    # Hanya rekonsiliasi transfer eksternal bank ('Setoran' & 'Penarikan'), bukan auto-debet internal RDN ('Setoran RDN')
+    df_sb_bank = df_sb[df_sb['category'].isin(['Setoran', 'Penarikan'])].copy()
+    if df_sb_bank.empty:
+        return pd.DataFrame()
+    
     df_transact['id_category'] = pd.to_numeric(df_transact['id_category'], errors='coerce')
     df_bca = df_transact[df_transact['id_category'] == 42].copy()
     
@@ -704,7 +728,7 @@ def reconcile_transactions():
     bca_available = df_bca.copy()
     
     unmatched = []
-    for _, row in df_sb.iterrows():
+    for _, row in df_sb_bank.iterrows():
         sb_cat = str(row['category'])
         sb_amt = float(pd.to_numeric(row['amount'], errors='coerce') or 0)
         sb_date = pd.to_datetime(row['date_str'], format='%d/%m/%Y', errors='coerce')
@@ -962,7 +986,6 @@ with tab1:
                         if not new_port_rows and not daily_transactions:
                             raise ValueError("Tidak ada data portofolio maupun transaksi harian yang dikenali dari PDF ini.")
 
-                        # Hapus data periode yang sama sebelum menimpa (anti-duplikat)
                         if not df_port.empty:
                             df_port = df_port[df_port['period_str'] != period_str]
                         if not df_trx.empty:
@@ -1153,11 +1176,9 @@ def render_investment():
                 if pd.notnull(dt_parsed) and dt_parsed.date() <= val_date:
                     cat_lower = str(row['category']).strip().lower()
                     raw_amt = abs(float(row['amount']))
-                    # Setoran ke RDN = arus kas keluar dari investor (-), Penarikan = arus kas masuk (+)
-                    signed_amt = -raw_amt if cat_lower == 'setoran' else raw_amt
+                    signed_amt = raw_amt if cat_lower == 'penarikan' else -raw_amt
                     xirr_data.append((dt_parsed.date(), signed_amt))
         
-        # Gunakan Equity NAB (total nilai saham + saldo kas RDN + tagihan T+2) sebagai nilai akhir rekening investasi
         terminal_equity = equity_nab_val if equity_nab_val > 0 else tot_mkt
         if terminal_equity > 0:
             xirr_data.append((val_date, terminal_equity))
@@ -1172,7 +1193,6 @@ def render_investment():
         if tot_buy > 0 and tot_mkt > 0:
             first_date = xirr_data[0][0] if len(xirr_data) > 1 else val_date
             days_invested = max((val_date - first_date).days, 1)
-            # Gunakan minimal 1.0 tahun saat durasi masih < 1 tahun agar tidak terjadi lonjakan distorsi annualization
             years_invested = max(days_invested / 365.25, 1.0)
             cagr_pct = ((tot_mkt / tot_buy) ** (1 / years_invested) - 1) * 100
 
