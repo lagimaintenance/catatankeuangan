@@ -115,45 +115,44 @@ st.markdown(f"""
     }}
     
     /* --- CENTERED TABS --- */
-    div[data-testid="stTabs"] > div[data-baseweb="tabs"] > div:first-child,
-    .stTabs [data-baseweb="tab-list"] {{
+    .stApp .stTabs [data-baseweb="tab-list"] {{
         display: flex !important;
         justify-content: center !important;
         align-items: center !important;
-        width: fit-content !important;
+        width: max-content !important;
         max-width: 100% !important;
-        margin-left: auto !important;
-        margin-right: auto !important;
-        gap: 4px !important;
+        margin: 0 auto !important;
+        gap: 6px !important;
         background-color: {tab_bg} !important;
         padding: 4px !important;
         border: 1px solid {border_color} !important;
         border-radius: 4px !important;
     }}
-    .stTabs [data-baseweb="tab-highlight"],
-    .stTabs [data-baseweb="tab-border"] {{
+    .stApp .stTabs [data-baseweb="tab-highlight"],
+    .stApp .stTabs [data-baseweb="tab-border"] {{
         display: none !important;
     }}
-    .stTabs [data-baseweb="tab"] {{
+    .stApp .stTabs [data-baseweb="tab"] {{
         background-color: transparent !important;
         border-radius: 2px !important;
-        padding: 6px 14px !important;
+        padding: 6px 16px !important;
+        margin: 0 !important;
     }}
-    .stTabs [data-baseweb="tab"] p, 
-    .stTabs [data-baseweb="tab"] span, 
-    .stTabs [data-baseweb="tab"] div {{
+    .stApp .stTabs [data-baseweb="tab"] p, 
+    .stApp .stTabs [data-baseweb="tab"] span, 
+    .stApp .stTabs [data-baseweb="tab"] div {{
         color: {tab_inactive_text} !important;
         font-size: 0.8rem !important;
         font-weight: 600 !important;
         text-transform: uppercase;
     }}
-    .stTabs [aria-selected="true"] {{
+    .stApp .stTabs [aria-selected="true"] {{
         background-color: {tab_active_bg} !important;
         border-radius: 2px !important;
     }}
-    .stTabs [aria-selected="true"] p, 
-    .stTabs [aria-selected="true"] span, 
-    .stTabs [aria-selected="true"] div {{
+    .stApp .stTabs [aria-selected="true"] p, 
+    .stApp .stTabs [aria-selected="true"] span, 
+    .stApp .stTabs [aria-selected="true"] div {{
         color: {tab_active_text} !important;
         font-weight: 700 !important;
     }}
@@ -268,14 +267,13 @@ st.markdown(f"""
         h1 {{ font-size: 1.4rem; }}
         h3 {{ font-size: 1.1rem; }}
         h4 {{ font-size: 1rem; }}
-        div[data-testid="stTabs"] > div[data-baseweb="tabs"] > div:first-child,
-        .stTabs [data-baseweb="tab-list"] {{
+        .stApp .stTabs [data-baseweb="tab-list"] {{
             flex-wrap: wrap !important;
             width: 100% !important;
         }}
-        .stTabs [data-baseweb="tab"] p, 
-        .stTabs [data-baseweb="tab"] span, 
-        .stTabs [data-baseweb="tab"] div {{
+        .stApp .stTabs [data-baseweb="tab"] p, 
+        .stApp .stTabs [data-baseweb="tab"] span, 
+        .stApp .stTabs [data-baseweb="tab"] div {{
             font-size: 0.7rem !important;
             padding: 4px 8px !important;
         }}
@@ -1467,7 +1465,11 @@ def render_investment():
         
         st.divider()
         
-        sub_tab = st.radio("Pilih Tampilan Dashboard", ["Ringkasan Portofolio", "Rincian Transaksi Harian", "Grafik Return (XIRR)"], horizontal=True)
+        sub_tab = st.radio(
+            "Pilih Tampilan Dashboard",
+            ["Ringkasan Portofolio", "Rincian Transaksi Harian", "Perkembangan Nilai Saham", "Grafik Return (XIRR)"],
+            horizontal=True
+        )
         st.divider()
         
         if sub_tab == "Ringkasan Portofolio":
@@ -1549,6 +1551,54 @@ def render_investment():
             else:
                 st.info(f"Tidak ada rincian transaksi harian terekstrak untuk periode {selected_period}.")
         
+        elif sub_tab == "Perkembangan Nilai Saham":
+            st.markdown("<h4>Market Value vs Buying Value (Rp)</h4>", unsafe_allow_html=True)
+            chart_periods = sorted(df_port['period_str'].astype(str).unique(), key=period_str_to_end_date)
+            val_records = []
+            for p in chart_periods:
+                sub_df = df_port[(df_port['period_str'] == p) & (df_port['symbol'] != 'IDR')]
+                if sub_df.empty:
+                    sub_df = df_port[df_port['period_str'] == p]
+                b_row = float(sub_df['total_modal'].iloc[0]) if not sub_df.empty else 0.0
+                m_row = float(sub_df['total_aset'].iloc[0]) if not sub_df.empty else 0.0
+
+                b_val = b_row if b_row > 0 else sub_df['buy_value'].sum()
+                m_val = m_row if m_row > 0 else sub_df['market_value'].sum()
+                val_records.append({
+                    'period_str': p,
+                    'Market Value': round(m_val),
+                    'Buying Value': round(b_val)
+                })
+
+            df_val_source = pd.DataFrame(val_records)
+            if not df_val_source.empty:
+                val_chart_data = df_val_source.melt(id_vars='period_str', var_name='Metrik', value_name='Nilai (Rp)')
+                val_chart_data['Nilai_Fmt'] = val_chart_data['Nilai (Rp)'].apply(fmt_rp)
+
+                chart_val = alt.Chart(val_chart_data).mark_line(strokeWidth=2.5, point=True).encode(
+                    x=alt.X('period_str:N', sort=None, title=None, axis=alt.Axis(labelColor=chart_text)),
+                    y=alt.Y('Nilai (Rp):Q', title=None, axis=alt.Axis(labelColor=chart_text, format=',.0f')),
+                    color=alt.Color(
+                        'Metrik:N',
+                        scale=alt.Scale(domain=['Market Value', 'Buying Value'], range=[text_color, '#8C8C8C']),
+                        legend=alt.Legend(title=None, orient='top', labelColor=chart_text)
+                    ),
+                    strokeDash=alt.StrokeDash(
+                        'Metrik:N',
+                        scale=alt.Scale(domain=['Market Value', 'Buying Value'], range=[[1, 0], [5, 4]]),
+                        legend=None
+                    ),
+                    tooltip=[
+                        alt.Tooltip('period_str:N', title='Periode'),
+                        alt.Tooltip('Metrik:N', title='Kategori'),
+                        alt.Tooltip('Nilai_Fmt:N', title='Nilai')
+                    ]
+                ).properties(height=350, background=chart_bg).configure_view(stroke=None).configure_axis(gridColor=chart_grid)
+
+                st.altair_chart(chart_val, use_container_width=True)
+            else:
+                st.info("Belum cukup data untuk merender grafik perkembangan nilai saham.")
+
         else: # Grafik Return (XIRR)
             st.markdown("<h4>Historis Return Portofolio & XIRR (%)</h4>", unsafe_allow_html=True)
             chart_periods = sorted(df_port['period_str'].astype(str).unique(), key=period_str_to_end_date)
