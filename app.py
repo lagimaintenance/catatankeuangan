@@ -61,13 +61,19 @@ else:
 
 st.markdown(f"""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Montserrat:wght@500;600;700;800&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Montserrat:wght@500;600;700&display=swap');
 
     .stApp {{
         background: {bg_color};
         color: {text_color};
-        font-family: 'Manrope', 'Avenir Next', sans-serif !important;
-        font-size: 0.92rem;
+        font-family: 'DM Sans', 'Inter', sans-serif !important;
+        font-size: 15.5px;
+        line-height: 1.5;
+        letter-spacing: -0.012em;
+    }}
+    .stApp button, .stApp input, .stApp textarea, .stApp select,
+    .stApp [data-baseweb] {{
+        font-family: 'DM Sans', 'Inter', sans-serif !important;
     }}
     header[data-testid="stHeader"] {{
         background: transparent !important;
@@ -77,60 +83,80 @@ st.markdown(f"""
     }}
 
     /* Overall page rhythm */
-    div[data-testid="stAppViewContainer"] .main .block-container {{
-        max-width: 1480px;
-        padding-top: 1.7rem;
-        padding-bottom: 3rem;
+    div[data-testid="stMainBlockContainer"],
+    div[data-testid="stAppViewContainer"] .main .block-container,
+    section.main > div.block-container {{
+        max-width: 1440px !important;
+        padding-top: 0.95rem !important;
+        padding-bottom: 2.5rem !important;
     }}
 
     h1 {{
         font-family: 'Montserrat', sans-serif !important;
         text-align: center;
         color: {text_color};
-        font-weight: 700;
-        font-size: 1.85rem;
-        letter-spacing: 0.045em;
+        font-weight: 600;
+        font-size: 1.78rem;
+        letter-spacing: -0.025em;
+        line-height: 1.18;
         text-transform: uppercase;
-        margin-bottom: 0.65rem;
+        margin-top: 0.15rem;
+        margin-bottom: 0.4rem;
     }}
 
     h3 {{
-        font-family: 'Montserrat', sans-serif !important;
-        text-align: center;
-        color: {text_color};
-        font-weight: 650;
-        font-size: 1.25rem;
-    }}
-
-    h4 {{
-        font-family: 'Montserrat', sans-serif !important;
+        font-family: 'DM Sans', 'Inter', sans-serif !important;
         text-align: center;
         color: {text_color};
         font-weight: 600;
-        font-size: 1.05rem;
+        font-size: 1.28rem;
+    }}
+
+    h4 {{
+        font-family: 'DM Sans', 'Inter', sans-serif !important;
+        text-align: center;
+        color: {text_color};
+        font-weight: 600;
+        font-size: 1.08rem;
     }}
 
     p, span, label, .stMarkdown {{
         color: {text_color} !important;
-        font-size: 0.88rem;
+        font-size: 0.94rem;
+        line-height: 1.5;
     }}
 
     .app-subtitle {{
         text-align: center;
         color: {sub_text} !important;
-        letter-spacing: 0.16em;
-        font-size: 0.68rem !important;
+        letter-spacing: 0.105em;
+        font-size: 0.74rem !important;
+        line-height: 1.45;
         font-weight: 600;
-        margin-top: -0.25rem;
-        margin-bottom: 1.65rem;
+        margin-top: -0.15rem;
+        margin-bottom: 1.15rem;
+    }}
+
+    .metric-section-label {{
+        color: {sub_text} !important;
+        font-family: 'DM Sans', 'Inter', sans-serif !important;
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+        margin: 0.65rem 0 0.35rem 0.1rem;
+    }}
+    .metric-section-label.secondary {{
+        margin-top: 1.1rem;
     }}
 
     /* Metric cards */
     div[data-testid="stMetric"] {{
         background: {card_bg};
         border: 1px solid {border_color};
-        padding: 16px 17px;
-        border-radius: 13px;
+        min-height: 112px;
+        padding: 19px 21px;
+        border-radius: 14px;
         box-shadow: {shadow_box};
         transition: border-color 0.18s ease, transform 0.18s ease;
     }}
@@ -139,15 +165,19 @@ st.markdown(f"""
         transform: translateY(-1px);
     }}
     div[data-testid="stMetricValue"] {{
-        font-size: 1.45rem;
+        font-size: 1.55rem;
+        line-height: 1.25;
         color: {text_color};
-        font-weight: 700;
+        font-weight: 600;
+        letter-spacing: -0.035em;
+        font-variant-numeric: tabular-nums;
     }}
     div[data-testid="stMetricLabel"] {{
         color: {sub_text};
-        text-transform: uppercase;
-        font-size: 0.72rem;
-        letter-spacing: 0.045em;
+        text-transform: none;
+        font-size: 0.82rem;
+        font-weight: 500;
+        letter-spacing: -0.005em;
     }}
 
     /* CENTERED NAVIGATION — COMPACT FLOATING FRAME */
@@ -202,10 +232,10 @@ st.markdown(f"""
     .stApp .stTabs [role="tab"] span,
     .stApp .stTabs [role="tab"] div {{
         color: {tab_inactive_text} !important;
-        font-family: 'Montserrat', sans-serif !important;
-        font-size: 0.76rem !important;
+        font-family: 'DM Sans', 'Inter', sans-serif !important;
+        font-size: 0.88rem !important;
         font-weight: 600 !important;
-        letter-spacing: 0.015em;
+        letter-spacing: -0.005em;
         text-transform: none;
     }}
     .stApp .stTabs [data-baseweb="tab"][aria-selected="true"],
@@ -220,7 +250,7 @@ st.markdown(f"""
     .stApp .stTabs [aria-selected="true"] span,
     .stApp .stTabs [aria-selected="true"] div {{
         color: {tab_active_text} !important;
-        font-weight: 700 !important;
+        font-weight: 600 !important;
     }}
     .stApp .stTabs [data-baseweb="tab-panel"] {{
         padding-top: 0.8rem;
@@ -236,9 +266,9 @@ st.markdown(f"""
         border: 1px solid {border_color} !important;
         border-radius: 9px !important;
         min-height: 40px;
-        font-family: 'Manrope', 'Avenir Next', sans-serif !important;
+        font-family: 'DM Sans', 'Inter', sans-serif !important;
         font-weight: 600 !important;
-        font-size: 0.82rem !important;
+        font-size: 0.9rem !important;
         box-shadow: {shadow_box};
         transition: all 0.18s ease;
     }}
@@ -281,8 +311,8 @@ st.markdown(f"""
         color: {text_color} !important;
         border: 1px solid {border_color} !important;
         border-radius: 9px !important;
-        font-family: 'Manrope', 'Avenir Next', sans-serif !important;
-        font-size: 0.86rem;
+        font-family: 'DM Sans', 'Inter', sans-serif !important;
+        font-size: 0.94rem;
         box-shadow: none !important;
     }}
     /* Keep the eye-toggle visually integrated with the password field */
@@ -363,13 +393,15 @@ st.markdown(f"""
     }}
 
     @media (max-width: 768px) {{
-        div[data-testid="stAppViewContainer"] .main .block-container {{
-            padding-top: 1.1rem;
-            padding-left: 1rem;
-            padding-right: 1rem;
+        div[data-testid="stMainBlockContainer"],
+        div[data-testid="stAppViewContainer"] .main .block-container,
+        section.main > div.block-container {{
+            padding-top: 0.7rem !important;
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
         }}
         h1 {{ font-size: 1.45rem; }}
-        h3 {{ font-size: 1.1rem; }}
+        h3 {{ font-size: 1.12rem; }}
         h4 {{ font-size: 0.98rem; }}
         .stApp div[data-testid="stTabs"] [data-baseweb="tab-list"],
         .stApp div[data-testid="stTabs"] [role="tablist"] {{
@@ -382,10 +414,11 @@ st.markdown(f"""
         .stApp .stTabs [data-baseweb="tab"] p,
         .stApp .stTabs [data-baseweb="tab"] span,
         .stApp .stTabs [data-baseweb="tab"] div {{
-            font-size: 0.68rem !important;
+            font-size: 0.8rem !important;
         }}
-        div[data-testid="stMetricValue"] {{ font-size: 1.18rem; }}
-        div[data-testid="stMetricLabel"] {{ font-size: 0.64rem; }}
+        div[data-testid="stMetric"] {{ min-height: 96px; padding: 15px 16px; }}
+        div[data-testid="stMetricValue"] {{ font-size: 1.25rem; }}
+        div[data-testid="stMetricLabel"] {{ font-size: 0.75rem; }}
     }}
     </style>
 """, unsafe_allow_html=True)
@@ -1503,8 +1536,7 @@ def _compute_period_xirr(bca_cashflows, end_date, terminal_value):
 def render_investment():
     st.markdown("<h3>Portofolio Investasi</h3>", unsafe_allow_html=True)
     st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.75rem; letter-spacing: 1px;'>[ HISTORICAL PERFORMANCE & TRANSACTIONS ]</p>", unsafe_allow_html=True)
-    st.write("")
-    
+
     df_port = get_sheet_df("STOCK_PORTFOLIO", PORT_COLS)
     df_trx = get_sheet_df("STOCK_TRANSACTIONS", TRX_COLS)
     df_transact = load_or_seed_transact()
@@ -1563,15 +1595,22 @@ def render_investment():
 
         simple_ret_pct = (tot_unreal / tot_buy * 100) if tot_buy > 0 else 0.0
 
-        st.write("")
-        col_s1, col_s2, col_s3, col_s4, col_s5, col_s6 = st.columns(6)
-        col_s1.metric("Total Modal", fmt_rp(tot_buy))
-        col_s2.metric("Total Aset", fmt_rp(tot_mkt))
-        col_s3.metric("Unrealized P/L", fmt_rp(tot_unreal), delta=fmt_pct(simple_ret_pct, signed=True))
-        col_s4.metric("Total Dividen", fmt_rp(tot_div))
-        col_s5.metric("XIRR", fmt_pct(xirr_pct))
-        col_s6.metric("CAGR", fmt_pct(cagr_pct))
-        
+        st.markdown("<div class='metric-section-label'>Nilai Portofolio</div>", unsafe_allow_html=True)
+        value_cols = st.columns(3, gap="large")
+        value_cols[0].metric("Total Modal", fmt_rp(tot_buy))
+        value_cols[1].metric("Total Aset", fmt_rp(tot_mkt))
+        value_cols[2].metric(
+            "Unrealized P/L",
+            fmt_rp(tot_unreal),
+            delta=fmt_pct(simple_ret_pct, signed=True)
+        )
+
+        st.markdown("<div class='metric-section-label secondary'>Kinerja & Pendapatan</div>", unsafe_allow_html=True)
+        performance_cols = st.columns(3, gap="large")
+        performance_cols[0].metric("Total Dividen", fmt_rp(tot_div))
+        performance_cols[1].metric("XIRR", fmt_pct(xirr_pct))
+        performance_cols[2].metric("CAGR", fmt_pct(cagr_pct))
+
         st.divider()
         
         sub_tab = st.radio(
@@ -1769,12 +1808,11 @@ with tab2:
                 else:
                     st.error("Password tidak valid.")
     else:
-        col_k1, col_k2, col_k3 = st.columns([3, 1, 3])
-        with col_k2:
+        col_lock_space, col_lock = st.columns([6, 1])
+        with col_lock:
             if st.button("Kunci Kembali", use_container_width=True, key="lock_dash"):
                 st.session_state.authenticated = False
                 st.rerun()
-        st.write("")
         render_dashboard()
 
 # ================= PAGE 3: INVESTASI (Protected) =================
@@ -1793,12 +1831,11 @@ with tab3:
                 else:
                     st.error("Password tidak valid.")
     else:
-        col_k1, col_k2, col_k3 = st.columns([3, 1, 3])
-        with col_k2:
+        col_lock_space, col_lock = st.columns([6, 1])
+        with col_lock:
             if st.button("Kunci Kembali", use_container_width=True, key="lock_inv"):
                 st.session_state.authenticated = False
                 st.rerun()
-        st.write("")
         render_investment()
 
 # --- COPYRIGHT FOOTER ---
