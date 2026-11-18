@@ -135,7 +135,7 @@ st.markdown(f"""
         line-height: 1.45;
         font-weight: 600;
         margin-top: -0.15rem;
-        margin-bottom: 1.15rem;
+        margin-bottom: 0.65rem;
     }}
 
     .metric-section-label {{
@@ -195,7 +195,7 @@ st.markdown(f"""
         width: fit-content !important;
         max-width: 100% !important;
         box-sizing: border-box !important;
-        margin: 0 auto 1.35rem !important;
+        margin: 0 auto 0.95rem !important;
         gap: 5px !important;
         background: {tab_bg} !important;
         padding: 5px !important;
@@ -1175,7 +1175,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# --- PLAYFUL PERSONAL CLOCK: LIVE WIB TIME + CLICKABLE DAILY RHYTHM ---
+# --- MINI DAILY COMPANION: A SMALL, PLAYFUL CHECK-IN ---
 clock_html = f"""
 <!DOCTYPE html>
 <html>
@@ -1184,175 +1184,192 @@ clock_html = f"""
 <style>
   @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
   :root {{
-    --card: {card_bg};
     --text: {text_color};
     --muted: {sub_text};
     --border: {border_color};
     --accent: {accent_color};
-    --chip: {tab_bg};
+    --surface: {tab_bg};
   }}
   * {{ box-sizing: border-box; }}
-  body {{
-    margin: 0; padding: 0;
-    font-family: 'DM Sans', 'Inter', sans-serif;
-    color: var(--text);
-    background: transparent;
+  html, body {{
+    margin: 0; padding: 0; width: 100%;
+    background: transparent; color: var(--text);
+    font-family: 'DM Sans', sans-serif;
   }}
-  .clock-shell {{
-    max-width: 760px; margin: 0 auto 14px;
-    padding: 17px 19px 14px;
+  .mini-wrap {{
+    width: 100%; display: flex; justify-content: center;
+    padding: 2px 0 5px;
+  }}
+  .mini-bar {{
+    width: min(100%, 650px); min-height: 52px;
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 11px 8px 14px;
     border: 1px solid var(--border);
-    border-radius: 17px;
-    background: var(--card);
-    box-shadow: 0 8px 24px rgba(25,38,55,.055);
-    position: relative; overflow: hidden;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--surface) 52%, transparent);
   }}
-  .clock-shell:before {{
-    content: ''; position: absolute; inset: 0 auto 0 0; width: 3px;
-    background: var(--accent); opacity: .9;
+  .clock {{
+    flex: 0 0 auto; display:flex; align-items:baseline; gap:5px;
+    padding-right: 12px; border-right: 1px solid var(--border);
+    font-size: 20px; line-height:1; font-weight:700;
+    letter-spacing:-.055em; font-variant-numeric:tabular-nums;
   }}
-  .topline {{
-    display:flex; align-items:center; justify-content:space-between;
-    gap:12px; margin-bottom:5px;
+  .tz {{ color:var(--muted); font-size:9px; font-weight:600; letter-spacing:.08em; }}
+  .message {{ min-width:0; flex:1; }}
+  .headline {{
+    font-size:12px; line-height:1.35; font-weight:700;
+    letter-spacing:-.015em; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis;
   }}
-  .eyebrow {{
-    color:var(--muted); font-size:10px; font-weight:700;
-    letter-spacing:.16em; text-transform:uppercase;
+  .subline {{
+    color:var(--muted); font-size:10px; line-height:1.35;
+    margin-top:2px; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis;
   }}
-  .live {{
-    display:flex; align-items:center; gap:6px; color:var(--muted);
-    font-size:10px; letter-spacing:.08em; text-transform:uppercase;
-  }}
-  .dot {{
-    width:6px;height:6px;border-radius:50%;background:#55B887;
-    box-shadow:0 0 0 3px rgba(85,184,135,.12);
-  }}
-  .mainrow {{
-    display:flex; align-items:center; justify-content:space-between;
-    gap:14px; flex-wrap:wrap;
-  }}
-  .time {{
-    font-size: clamp(29px, 5vw, 39px); line-height:1.05;
-    font-weight:700; letter-spacing:-.055em;
-    font-variant-numeric:tabular-nums;
-  }}
-  .date {{
-    color:var(--muted); font-size:11px; margin-top:5px;
-    letter-spacing:.015em;
-  }}
-  .greeting {{
-    text-align:right; flex:1; min-width:190px;
-  }}
-  .greeting-title {{
-    font-size:15px; font-weight:700; letter-spacing:-.025em;
-  }}
-  .greeting-sub {{
-    color:var(--muted); font-size:11px; margin-top:3px;
-  }}
-  .chips {{ display:flex; gap:7px; flex-wrap:wrap; margin-top:13px; }}
-  .chip {{
-    border:1px solid var(--border); background:var(--chip);
-    color:var(--muted); border-radius:999px; padding:6px 10px;
-    font:600 10px 'DM Sans','Inter',sans-serif; cursor:pointer;
+  .nudge {{
+    flex:0 0 auto; border:1px solid var(--border);
+    background:transparent; color:var(--muted);
+    border-radius:999px; padding:6px 9px;
+    font:600 9px 'DM Sans',sans-serif; cursor:pointer;
     transition:all .15s ease;
   }}
-  .chip.active {{ color:var(--text); border-color:var(--accent); }}
-  .detail {{
-    display:none; margin-top:10px; padding:10px 12px;
-    border-radius:10px; background:var(--chip);
-    color:var(--muted); font-size:11px; line-height:1.6;
+  .nudge:hover {{
+    color:var(--text); border-color:var(--accent);
+    background:var(--surface);
   }}
-  .detail.show {{ display:block; }}
-  .detail strong {{ color:var(--text); }}
+  .nudge:active {{ transform:scale(.97); }}
   @media(max-width:520px) {{
-    .clock-shell {{ padding:15px 15px 13px; margin-bottom:10px; border-radius:14px; }}
-    .mainrow {{ align-items:flex-start; }}
-    .greeting {{ text-align:left; flex-basis:100%; }}
-    .greeting-title {{ font-size:14px; }}
-    .chips {{ margin-top:11px; }}
+    .mini-wrap {{ padding:0 0 4px; }}
+    .mini-bar {{ min-height:49px; gap:9px; padding:7px 8px 7px 11px; border-radius:10px; }}
+    .clock {{ font-size:18px; padding-right:9px; }}
+    .tz {{ font-size:8px; }}
+    .headline {{ font-size:11px; }}
+    .subline {{ font-size:9px; }}
+    .nudge {{ padding:6px 7px; font-size:8px; }}
   }}
 </style>
 </head>
 <body>
-<div class="clock-shell">
-  <div class="topline">
-    <div class="eyebrow">Your daily rhythm</div>
-    <div class="live"><span class="dot"></span> Live · WIB</div>
-  </div>
-  <div class="mainrow">
-    <div>
-      <div class="time" id="clock">--:--:--</div>
-      <div class="date" id="date">Loading your day...</div>
+<div class="mini-wrap">
+  <div class="mini-bar">
+    <div class="clock"><span id="clock">--:--</span><span class="tz">WIB</span></div>
+    <div class="message">
+      <div class="headline" id="headline">Getting the day together...</div>
+      <div class="subline" id="subline">A small check-in, nothing more.</div>
     </div>
-    <div class="greeting">
-      <div class="greeting-title" id="greeting">Getting things ready...</div>
-      <div class="greeting-sub" id="subline">A little check-in with your day.</div>
-    </div>
-  </div>
-  <div class="chips">
-    <button class="chip active" id="marketBtn" onclick="showDetail('market')">Market hours</button>
-    <button class="chip" id="workBtn" onclick="showDetail('work')">Workday rhythm</button>
-  </div>
-  <div class="detail show" id="detail">
-    <strong>Market watch:</strong> Bursa Indonesia biasanya mulai sesi reguler pukul 09.00 WIB. Cek kalender bursa untuk hari libur dan perubahan jadwal.
+    <button class="nudge" id="nudge" onclick="nextLine()">One more</button>
   </div>
 </div>
 <script>
   const fmt = (opts) => new Intl.DateTimeFormat('id-ID', {{ timeZone:'Asia/Jakarta', ...opts }});
-  function updateClock() {{
-    const now = new Date();
-    const parts = Object.fromEntries(fmt({{hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}})
-      .formatToParts(now).map(p => [p.type,p.value]));
-    const h = Number(parts.hour), m = Number(parts.minute);
-    const weekday = fmt({{weekday:'short'}}).format(now).toLowerCase();
-    const weekend = weekday.startsWith('sab') || weekday.startsWith('min');
-    document.getElementById('clock').textContent = `${{parts.hour}}:${{parts.minute}}:${{parts.second}}`;
-    document.getElementById('date').textContent =
-      fmt({{weekday:'long', day:'numeric', month:'long', year:'numeric'}}).format(now);
+  let currentJokes = [];
+  let jokeIndex = 0;
 
-    let title, sub;
-    if (weekend) {{
-      title = h < 12 ? 'No rush. It is the weekend.' : 'A day with nowhere to be.';
-      sub = 'No office, no market. You can let the day unfold for once.';
-    }} else if (h < 9) {{
-      title = 'Another day, another set of possibilities.';
-      sub = 'Office starts at 09.00. The market does too. Take it as it comes.';
-    }} else if (h < 12) {{
-      title = 'The market is open. So is the to-do list.';
-      sub = 'No need to keep checking every move. Focus on what is in front of you.';
-    }} else if (h < 13 || (h === 13 && m < 30)) {{
-      title = 'A pause is part of the plan.';
-      sub = 'Go get lunch. Your portfolio can manage without supervision.';
-    }} else if (h < 16) {{
-      title = 'The day is moving along.';
-      sub = 'A few things left to finish. No need to make everything urgent.';
-    }} else if (h < 19) {{
-      title = 'That is enough work for today.';
-      sub = 'It is around 16.00. The market is wrapping up too. Leave some room for life.';
-    }} else {{
-      title = 'Nothing needs to be figured out tonight.';
-      sub = 'The market will be there tomorrow. For now, just be where you are.';
+  function getMoment() {{
+    const parts = Object.fromEntries(fmt({{hour:'2-digit', minute:'2-digit', hourCycle:'h23'}})
+      .formatToParts(new Date()).map(p => [p.type,p.value]));
+    const h = Number(parts.hour), m = Number(parts.minute);
+    const weekday = fmt({{weekday:'short'}}).format(new Date()).toLowerCase();
+    const weekend = weekday.startsWith('sab') || weekday.startsWith('min');
+
+    if (weekend) return {{
+      title: 'Market is off. Lu juga boleh.',
+      sub: 'Weekend mode. No need to turn everything into a productivity project.',
+      jokes: [
+        'The portfolio is not going anywhere. Hopefully.',
+        'No market today. The only thing to monitor is your coffee.',
+        'Rest is also an asset. Please stop trying to optimize it.'
+      ]
+    }};
+    if (h < 9) return {{
+      title: '09.00 is coming. So is the coffee, hopefully.',
+      sub: 'Office starts, market opens. Let’s not make both a dramatic event.',
+      jokes: [
+        'A fresh start. Same passwords, same spreadsheets.',
+        'You can be ambitious after breakfast too.',
+        'The market opens at nine. Your brain may need a little longer.'
+      ]
+    }};
+    if (h < 12) return {{
+      title: 'Market is open. Behave yourself.',
+      sub: 'Check the numbers, not every five seconds.',
+      jokes: [
+        'A red candle is not a personal attack.',
+        'Long-term investor, short-term screen time. Interesting.',
+        'You said you were investing, not adopting every ticker.'
+      ]
+    }};
+    if (h < 13 || (h === 13 && m < 30)) return {{
+      title: 'Go eat. The market can wait.',
+      sub: 'Lunch break. Your portfolio has survived without you before.',
+      jokes: [
+        'Asset allocation is important. So is lunch allocation.',
+        'No financial decision needs to be made while hungry.',
+        'Please diversify your lunch, not just your portfolio.'
+      ]
+    }};
+    if (h < 16) return {{
+      title: 'Afternoon session. Keep it together.',
+      sub: 'Finish what matters. The rest can join tomorrow’s agenda.',
+      jokes: [
+        'You do not get bonus points for worrying early.',
+        'One spreadsheet at a time. You are not the whole finance department.',
+        'Almost there. Try not to open seventeen new tabs.'
+      ]
+    }};
+    if (h < 19) return {{
+      title: 'Market closed. Lu boleh ikut tutup laptop.',
+      sub: 'Workday is winding down. The rest of your life is still open.',
+      jokes: [
+        'Your inbox will still be there tomorrow. Unfortunately.',
+        'Clock out before you start reviewing your life performance.',
+        'Today’s closing price: enough work done.'
+      ]
+    }};
+    return {{
+      title: 'Portfolio can wait. Life is happening.',
+      sub: 'No need to figure everything out tonight.',
+      jokes: [
+        'The market is closed. Maybe close a few tabs too.',
+        'You have checked the portfolio. It has not developed new feelings.',
+        'Tomorrow has its own problems. Let it have them.'
+      ]
+    }};
+  }}
+
+  function updateClock() {{
+    const parts = Object.fromEntries(fmt({{hour:'2-digit', minute:'2-digit', hourCycle:'h23'}})
+      .formatToParts(new Date()).map(p => [p.type,p.value]));
+    document.getElementById('clock').textContent = `${{parts.hour}}:${{parts.minute}}`;
+
+    const moment = getMoment();
+    const headline = document.getElementById('headline');
+    const subline = document.getElementById('subline');
+    if (headline.dataset.period !== moment.title) {{
+      headline.dataset.period = moment.title;
+      headline.textContent = moment.title;
+      subline.textContent = moment.sub;
+      currentJokes = moment.jokes;
+      jokeIndex = 0;
+      document.getElementById('nudge').textContent = 'One more';
     }}
-    document.getElementById('greeting').textContent = title;
-    document.getElementById('subline').textContent = sub;
   }}
-  function showDetail(which) {{
-    const market = which === 'market';
-    document.getElementById('marketBtn').classList.toggle('active', market);
-    document.getElementById('workBtn').classList.toggle('active', !market);
-    const box = document.getElementById('detail');
-    box.classList.add('show');
-    box.innerHTML = market
-      ? '<strong>Market hours:</strong> IDX trading starts at 09.00 WIB. There is a lunch break, and closing times may vary by day. Check the official exchange calendar for holidays and special sessions.'
-      : '<strong>Your usual weekday:</strong> 09.00 · Office starts / market opens<br>12.00-ish · Take a proper lunch break<br>16.00 · Wrap up and head home<br><span style="opacity:.8">A reminder, not a deadline for having life figured out.</span>';
+
+  function nextLine() {{
+    if (!currentJokes.length) return;
+    const subline = document.getElementById('subline');
+    subline.textContent = currentJokes[jokeIndex % currentJokes.length];
+    jokeIndex++;
+    document.getElementById('nudge').textContent = jokeIndex % currentJokes.length === 0 ? 'Again' : 'Next';
   }}
+
   updateClock();
   setInterval(updateClock, 1000);
 </script>
 </body>
 </html>
 """
-components.html(clock_html, height=190, scrolling=False)
+components.html(clock_html, height=66, scrolling=False)
 
 tab1, tab2, tab3 = st.tabs(["Konversi PDF", "Dashboard", "Investasi"])
 
