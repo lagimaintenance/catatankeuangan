@@ -18,7 +18,7 @@ st.set_page_config(page_title="Dashboard Keuangan", layout="wide")
 
 # --- STATE MANAGEMENT UNTUK THEME ---
 if 'theme' not in st.session_state:
-    st.session_state.theme = 'Light'
+    st.session_state.theme = 'Dark'
 
 # --- DYNAMIC CSS & NOTHING AESTHETIC REFINEMENT (MOBILE & CLOUD READY) ---
 if st.session_state.theme == 'Light':
@@ -64,7 +64,8 @@ st.markdown(f"""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Montserrat:wght@500;600;700&display=swap');
 
-    .stApp {{
+    .stApp,
+    div[data-testid="stAppViewContainer"] {{
         background: {bg_color};
         color: {text_color};
         font-family: 'DM Sans', 'Inter', sans-serif !important;
