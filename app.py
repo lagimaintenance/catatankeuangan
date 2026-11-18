@@ -21,87 +21,113 @@ if 'theme' not in st.session_state:
 
 # --- DYNAMIC CSS & NOTHING AESTHETIC REFINEMENT (MOBILE & CLOUD READY) ---
 if st.session_state.theme == 'Light':
-    bg_color = "#F7F7F8"
+    bg_color = "#F5F7FA"
     card_bg = "#FFFFFF"
-    text_color = "#111111"
-    sub_text = "#555555"
-    border_color = "#222222"
+    text_color = "#1B2430"
+    sub_text = "#687385"
+    border_color = "#E1E6ED"
     input_bg = "#FFFFFF"
-    tab_bg = "#EAEAEA"
-    tab_active_bg = "#111111"
+    tab_bg = "#EEF1F5"
+    tab_active_bg = "#202C3B"
     tab_active_text = "#FFFFFF"
-    tab_inactive_text = "#333333"
-    primary_btn_bg = "#111111"
+    tab_inactive_text = "#536071"
+    primary_btn_bg = "#202C3B"
     primary_btn_text = "#FFFFFF"
     chart_bg = "#FFFFFF"
-    chart_text = "#333333"
-    chart_grid = "#E5E5E5"
-    shadow_box = "0 4px 12px rgba(0, 0, 0, 0.04)"
-    mono_palette = ["#111111", "#2B2B2B", "#454545", "#5E5E5E", "#787878", "#919191", "#ABABAB", "#C4C4C4", "#DCDCDC"]
+    chart_text = "#536071"
+    chart_grid = "#E8ECF1"
+    shadow_box = "0 8px 24px rgba(25, 38, 55, 0.05)"
+    accent_color = "#B69A68"
+    mono_palette = ["#202C3B", "#344255", "#48596D", "#607186", "#78889A", "#929EAC", "#ADB6C1", "#C8CED6", "#E1E5EA"]
 else:
-    bg_color = "#1E1E22"
-    card_bg = "#2A2D32"
-    text_color = "#F5F5F5"
-    sub_text = "#AAAAAA"
-    border_color = "#555555"
-    input_bg = "#22252A"
-    tab_bg = "#22252A"
-    tab_active_bg = "#F5F5F5"
-    tab_active_text = "#1E1E22"
-    tab_inactive_text = "#CCCCCC"
-    primary_btn_bg = "#F5F5F5"
-    primary_btn_text = "#111111"
-    chart_bg = "#2A2D32"
-    chart_text = "#CCCCCC"
-    chart_grid = "#3A3D42"
-    shadow_box = "0 4px 12px rgba(0, 0, 0, 0.2)"
-    mono_palette = ["#F5F5F5", "#DCDCDC", "#C2C2C2", "#A8A8A8", "#8E8E8E", "#757575", "#5C5C5C", "#454545", "#333333"]
+    bg_color = "#12161C"
+    card_bg = "#1B212A"
+    text_color = "#EDF1F6"
+    sub_text = "#9AA6B5"
+    border_color = "#303946"
+    input_bg = "#171D25"
+    tab_bg = "#1B222C"
+    tab_active_bg = "#E9EEF5"
+    tab_active_text = "#17202B"
+    tab_inactive_text = "#B8C2CF"
+    primary_btn_bg = "#E9EEF5"
+    primary_btn_text = "#17202B"
+    chart_bg = "#1B212A"
+    chart_text = "#B8C2CF"
+    chart_grid = "#303946"
+    shadow_box = "0 8px 24px rgba(0, 0, 0, 0.22)"
+    accent_color = "#B69A68"
+    mono_palette = ["#EDF1F6", "#D8DEE7", "#C2CBD7", "#ABB7C5", "#94A2B2", "#7D8C9E", "#66778A", "#4F6175", "#39495B"]
 
 st.markdown(f"""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
     .stApp {{
-        background-color: {bg_color};
+        background: {bg_color};
         color: {text_color};
-        font-family: 'Montserrat', sans-serif !important;
-        font-size: 0.9rem;
+        font-family: 'Inter', sans-serif !important;
+        font-size: 0.92rem;
     }}
-    
+
+    /* Overall page rhythm */
+    div[data-testid="stAppViewContainer"] .main .block-container {{
+        max-width: 1480px;
+        padding-top: 1.7rem;
+        padding-bottom: 3rem;
+    }}
+
     h1 {{
         text-align: center;
         color: {text_color};
         font-weight: 700;
-        font-size: 1.8rem;
-        letter-spacing: 0.5px;
+        font-size: 1.85rem;
+        letter-spacing: 0.045em;
         text-transform: uppercase;
+        margin-bottom: 0.65rem;
     }}
-    
+
     h3 {{
         text-align: center;
         color: {text_color};
-        font-weight: 600;
-        font-size: 1.3rem;
+        font-weight: 650;
+        font-size: 1.25rem;
     }}
 
     h4 {{
         text-align: center;
         color: {text_color};
         font-weight: 600;
-        font-size: 1.1rem;
+        font-size: 1.05rem;
     }}
-    
+
     p, span, label, .stMarkdown {{
         color: {text_color} !important;
-        font-size: 0.85rem;
+        font-size: 0.88rem;
     }}
-    
+
+    .app-subtitle {{
+        text-align: center;
+        color: {sub_text} !important;
+        letter-spacing: 0.16em;
+        font-size: 0.68rem !important;
+        font-weight: 600;
+        margin-top: -0.25rem;
+        margin-bottom: 1.65rem;
+    }}
+
+    /* Metric cards */
     div[data-testid="stMetric"] {{
-        background-color: {card_bg};
+        background: {card_bg};
         border: 1px solid {border_color};
-        padding: 12px;
-        border-radius: 4px;
+        padding: 16px 17px;
+        border-radius: 13px;
         box-shadow: {shadow_box};
+        transition: border-color 0.18s ease, transform 0.18s ease;
+    }}
+    div[data-testid="stMetric"]:hover {{
+        border-color: {accent_color};
+        transform: translateY(-1px);
     }}
     div[data-testid="stMetricValue"] {{
         font-size: 1.45rem;
@@ -111,65 +137,81 @@ st.markdown(f"""
     div[data-testid="stMetricLabel"] {{
         color: {sub_text};
         text-transform: uppercase;
-        font-size: 0.75rem;
+        font-size: 0.72rem;
+        letter-spacing: 0.045em;
     }}
-    
-    /* --- CENTERED TABS --- */
-    .stApp .stTabs [data-baseweb="tab-list"] {{
+
+    /* CENTERED NAVIGATION TABS */
+    div[data-testid="stTabs"] > div:first-child {{
+        width: 100% !important;
+    }}
+    .stApp div[data-testid="stTabs"] [data-baseweb="tab-list"],
+    .stApp div[data-testid="stTabs"] [role="tablist"] {{
         display: flex !important;
         justify-content: center !important;
         align-items: center !important;
-        width: max-content !important;
+        width: 100% !important;
         max-width: 100% !important;
-        margin: 0 auto !important;
-        gap: 6px !important;
-        background-color: {tab_bg} !important;
-        padding: 4px !important;
-        border: 1px solid {border_color} !important;
-        border-radius: 4px !important;
+        box-sizing: border-box !important;
+        margin: 0 auto 1.25rem !important;
+        gap: 8px !important;
+        background: transparent !important;
+        padding: 0 0 12px !important;
+        border-bottom: 1px solid {border_color} !important;
     }}
     .stApp .stTabs [data-baseweb="tab-highlight"],
     .stApp .stTabs [data-baseweb="tab-border"] {{
         display: none !important;
     }}
     .stApp .stTabs [data-baseweb="tab"] {{
-        background-color: transparent !important;
-        border-radius: 2px !important;
-        padding: 6px 16px !important;
+        flex: 0 0 auto !important;
+        background: transparent !important;
+        border: 1px solid transparent !important;
+        border-radius: 999px !important;
+        padding: 8px 19px !important;
         margin: 0 !important;
+        min-height: 40px !important;
+        transition: all 0.18s ease;
     }}
-    .stApp .stTabs [data-baseweb="tab"] p, 
-    .stApp .stTabs [data-baseweb="tab"] span, 
+    .stApp .stTabs [data-baseweb="tab"] p,
+    .stApp .stTabs [data-baseweb="tab"] span,
     .stApp .stTabs [data-baseweb="tab"] div {{
         color: {tab_inactive_text} !important;
-        font-size: 0.8rem !important;
+        font-size: 0.78rem !important;
         font-weight: 600 !important;
+        letter-spacing: 0.035em;
         text-transform: uppercase;
     }}
-    .stApp .stTabs [aria-selected="true"] {{
-        background-color: {tab_active_bg} !important;
-        border-radius: 2px !important;
+    .stApp .stTabs [data-baseweb="tab"][aria-selected="true"],
+    .stApp .stTabs [role="tab"][aria-selected="true"] {{
+        background: {tab_active_bg} !important;
+        border: 1px solid {accent_color} !important;
+        border-radius: 999px !important;
     }}
-    .stApp .stTabs [aria-selected="true"] p, 
-    .stApp .stTabs [aria-selected="true"] span, 
+    .stApp .stTabs [aria-selected="true"] p,
+    .stApp .stTabs [aria-selected="true"] span,
     .stApp .stTabs [aria-selected="true"] div {{
         color: {tab_active_text} !important;
         font-weight: 700 !important;
     }}
-    
-    /* --- UNIFIED BUTTON STYLING (st.button, st.download_button, File Uploader Browse) --- */
+    .stApp .stTabs [data-baseweb="tab-panel"] {{
+        padding-top: 0.75rem;
+    }}
+
+    /* Buttons */
     .stButton button,
     .stDownloadButton button,
     div[data-testid="stFileUploader"] button,
     div[data-testid="stFileUploaderDropzone"] button {{
-        background-color: {card_bg} !important;
+        background: {card_bg} !important;
         color: {text_color} !important;
         border: 1px solid {border_color} !important;
-        border-radius: 4px !important;
+        border-radius: 9px !important;
+        min-height: 40px;
         font-weight: 600 !important;
         font-size: 0.82rem !important;
         box-shadow: {shadow_box};
-        transition: all 0.15s ease;
+        transition: all 0.18s ease;
     }}
     .stButton button p,
     .stButton button span,
@@ -185,44 +227,35 @@ st.markdown(f"""
     .stDownloadButton button:hover,
     div[data-testid="stFileUploader"] button:hover,
     div[data-testid="stFileUploaderDropzone"] button:hover {{
-        background-color: {primary_btn_bg} !important;
-        color: {primary_btn_text} !important;
-        border-color: {primary_btn_bg} !important;
+        border-color: {accent_color} !important;
+        transform: translateY(-1px);
     }}
-    .stButton button:hover p,
-    .stButton button:hover span,
-    .stDownloadButton button:hover p,
-    .stDownloadButton button:hover span,
-    div[data-testid="stFileUploader"] button:hover p,
-    div[data-testid="stFileUploader"] button:hover span {{
-        color: {primary_btn_text} !important;
-    }}
-
-    /* Primary Action Button */
     .stButton button[kind="primary"] {{
-        background-color: {primary_btn_bg} !important;
+        background: {primary_btn_bg} !important;
         color: {primary_btn_text} !important;
         border: 1px solid {primary_btn_bg} !important;
         text-transform: uppercase;
+        letter-spacing: 0.045em;
     }}
     .stButton button[kind="primary"] p,
     .stButton button[kind="primary"] span {{
         color: {primary_btn_text} !important;
     }}
     .stButton button[kind="primary"]:hover {{
-        opacity: 0.88;
+        border-color: {accent_color} !important;
+        opacity: 0.94;
     }}
 
-    /* Input & Password Eye Toggle Button */
-    .stTextInput input, .stSelectbox select {{
-        background-color: {input_bg} !important;
+    /* Inputs */
+    .stTextInput input, .stSelectbox select, .stNumberInput input, .stDateInput input {{
+        background: {input_bg} !important;
         color: {text_color} !important;
         border: 1px solid {border_color} !important;
-        border-radius: 4px !important;
-        font-size: 0.85rem;
+        border-radius: 9px !important;
+        font-size: 0.86rem;
     }}
     div[data-testid="stTextInput"] button {{
-        background-color: {input_bg} !important;
+        background: {input_bg} !important;
         color: {text_color} !important;
         border: none !important;
     }}
@@ -231,27 +264,28 @@ st.markdown(f"""
         color: {text_color} !important;
     }}
 
-    /* File Uploader Dropzone & Uploaded File Item */
+    /* PDF uploader */
     div[data-testid="stFileUploader"] {{
         border: 1px solid {border_color};
-        border-radius: 4px;
-        padding: 10px;
-        background-color: {card_bg} !important;
+        border-radius: 12px;
+        padding: 12px;
+        background: {card_bg} !important;
         box-shadow: {shadow_box};
     }}
     div[data-testid="stFileUploader"] section {{
-        background-color: {input_bg} !important;
+        background: {input_bg} !important;
         border: 1px dashed {border_color} !important;
+        border-radius: 9px !important;
     }}
     div[data-testid="stFileUploader"] section svg {{
-        fill: {text_color} !important;
-        color: {text_color} !important;
+        fill: {sub_text} !important;
+        color: {sub_text} !important;
     }}
     div[data-testid="stFileUploaderFile"] {{
-        background-color: {tab_bg} !important;
+        background: {tab_bg} !important;
         border: 1px solid {border_color} !important;
-        border-radius: 4px !important;
-        padding: 4px 8px !important;
+        border-radius: 8px !important;
+        padding: 5px 9px !important;
     }}
     div[data-testid="stFileUploaderFile"] span,
     div[data-testid="stFileUploaderFile"] small,
@@ -259,26 +293,38 @@ st.markdown(f"""
         color: {text_color} !important;
     }}
 
+    div[data-testid="stAlert"] {{
+        border-radius: 10px;
+    }}
+
     hr {{
         border-color: {border_color};
     }}
 
     @media (max-width: 768px) {{
-        h1 {{ font-size: 1.4rem; }}
+        div[data-testid="stAppViewContainer"] .main .block-container {{
+            padding-top: 1.1rem;
+            padding-left: 1rem;
+            padding-right: 1rem;
+        }}
+        h1 {{ font-size: 1.45rem; }}
         h3 {{ font-size: 1.1rem; }}
-        h4 {{ font-size: 1rem; }}
-        .stApp .stTabs [data-baseweb="tab-list"] {{
+        h4 {{ font-size: 0.98rem; }}
+        .stApp div[data-testid="stTabs"] [data-baseweb="tab-list"],
+        .stApp div[data-testid="stTabs"] [role="tablist"] {{
             flex-wrap: wrap !important;
-            width: 100% !important;
+            gap: 5px !important;
         }}
-        .stApp .stTabs [data-baseweb="tab"] p, 
-        .stApp .stTabs [data-baseweb="tab"] span, 
+        .stApp .stTabs [data-baseweb="tab"] {{
+            padding: 7px 12px !important;
+        }}
+        .stApp .stTabs [data-baseweb="tab"] p,
+        .stApp .stTabs [data-baseweb="tab"] span,
         .stApp .stTabs [data-baseweb="tab"] div {{
-            font-size: 0.7rem !important;
-            padding: 4px 8px !important;
+            font-size: 0.68rem !important;
         }}
-        div[data-testid="stMetricValue"] {{ font-size: 1.2rem; }}
-        div[data-testid="stMetricLabel"] {{ font-size: 0.65rem; }}
+        div[data-testid="stMetricValue"] {{ font-size: 1.18rem; }}
+        div[data-testid="stMetricLabel"] {{ font-size: 0.64rem; }}
     }}
     </style>
 """, unsafe_allow_html=True)
@@ -988,14 +1034,16 @@ if 'authenticated' not in st.session_state:
 # --- HEADER & TOGGLE TEMA ---
 col_head1, col_head2 = st.columns([10, 1])
 with col_head2:
-    toggle_label = "D" if st.session_state.theme == 'Light' else "L"
-    if st.button(toggle_label, help="Ganti Tema (Light/Dark)"):
+    toggle_label = "☾" if st.session_state.theme == 'Light' else "☀"
+    if st.button(toggle_label, help="Ganti tema terang / gelap"):
         st.session_state.theme = 'Dark' if st.session_state.theme == 'Light' else 'Light'
         st.rerun()
 
 st.markdown("<h1>Financial Dashboard</h1>", unsafe_allow_html=True)
-st.markdown(f"<p style='text-align: center; color: {sub_text}; letter-spacing: 2px; font-size: 0.75rem;'>[ SYSTEM ACTIVE // CLOUD PERSISTENCE ]</p>", unsafe_allow_html=True)
-st.write("")
+st.markdown(
+    "<p class='app-subtitle'>PERSONAL FINANCE&nbsp;&nbsp;•&nbsp;&nbsp;CASH FLOW&nbsp;&nbsp;•&nbsp;&nbsp;INVESTMENTS</p>",
+    unsafe_allow_html=True
+)
 
 tab1, tab2, tab3 = st.tabs(["Konversi PDF", "Dashboard", "Investasi"])
 
