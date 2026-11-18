@@ -5,3 +5,5 @@ pyxirr
 altair
 numpy
 openpyxl
+streamlit-gsheets
+gspread
