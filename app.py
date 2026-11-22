@@ -519,6 +519,7 @@ WORK_DB = 'CK_Working.ckbak'
 INV_DB = 'INV_Working.db'
 
 TRANSACT_COLS = ['_id', 'id_category', 'desc', 'type', 'date', 'amount']
+CASH_POS_COLS = ['updated_at', 'saldo_bca', 'tagihan_cc', 'aktual_cash', 'keterangan']
 PORT_COLS = [
     'period_str', 'timestamp', 'symbol', 'qty', 'avg_price', 'last_price',
     'buy_value', 'market_value', 'unrealized_rp', 'unrealized_pct',
@@ -582,7 +583,7 @@ def get_sheet_df(sheet_name, expected_cols):
         df = read_worksheet_cached(sheet_name).copy()
         if df.empty:
             return pd.DataFrame(columns=expected_cols)
-        numeric_defaults = {'total_modal', 'total_aset', 'total_unrealized_rp', 'equity_nab'}
+        numeric_defaults = {'total_modal', 'total_aset', 'total_unrealized_rp', 'equity_nab', 'saldo_bca', 'tagihan_cc', 'aktual_cash'}
         for col in expected_cols:
             if col not in df.columns:
                 df[col] = 0.0 if col in numeric_defaults else ""
@@ -599,6 +600,54 @@ def save_sheet_df(df, sheet_name, expected_cols):
     except Exception:
         conn_gsheets.create(worksheet=sheet_name, data=out_df)
     read_worksheet_cached.clear()
+
+# --- CASH POSITION (SALDO AKHIR BCA - TAGIHAN CC = AKTUAL CASH) ---
+def load_cash_position():
+    if 'cash_pos_state' in st.session_state:
+        return st.session_state['cash_pos_state']
+    try:
+        df = read_worksheet_cached("CASH_POSITION").copy()
+        if not df.empty:
+            last = df.iloc[-1]
+            state = {
+                'saldo_bca': float(pd.to_numeric(last.get('saldo_bca', 0), errors='coerce') or 0.0),
+                'tagihan_cc': float(pd.to_numeric(last.get('tagihan_cc', 0), errors='coerce') or 0.0),
+                'updated_at': str(last.get('updated_at', '-')),
+                'keterangan': str(last.get('keterangan', '-')),
+            }
+            st.session_state['cash_pos_state'] = state
+            return state
+    except Exception:
+        pass
+    return {
+        'saldo_bca': 0.0,
+        'tagihan_cc': 0.0,
+        'updated_at': 'Belum ada data',
+        'keterangan': '-',
+    }
+
+def save_cash_position(saldo_bca, tagihan_cc, keterangan="Update Manual"):
+    now_wib = datetime.datetime.now(WIB_TZ).strftime("%d/%m/%Y %H:%M WIB")
+    s_bca = float(saldo_bca or 0.0)
+    t_cc = float(tagihan_cc or 0.0)
+    a_cash = s_bca - t_cc
+
+    state = {
+        'saldo_bca': s_bca,
+        'tagihan_cc': t_cc,
+        'updated_at': now_wib,
+        'keterangan': keterangan,
+    }
+    st.session_state['cash_pos_state'] = state
+
+    df_pos = pd.DataFrame([{
+        'updated_at': now_wib,
+        'saldo_bca': round(s_bca, 2),
+        'tagihan_cc': round(t_cc, 2),
+        'aktual_cash': round(a_cash, 2),
+        'keterangan': keterangan,
+    }])
+    save_sheet_df(df_pos, "CASH_POSITION", CASH_POS_COLS)
 
 def get_bank_connection():
     return sqlite3.connect(WORK_DB)
@@ -751,6 +800,64 @@ def extract_pdf_text(reader):
     for page in reader.pages:
         chunks.append(page.extract_text() or "")
     return "\n".join(chunks)
+
+def _parse_flexible_id_amount(val_str):
+    if not val_str:
+        return None
+    s = re.sub(r'[^0-9.,]', '', str(val_str).strip())
+    if not s:
+        return None
+    if ',' in s and '.' in s:
+        if s.rfind(',') > s.rfind('.'):
+            s = s.replace('.', '').replace(',', '.')
+        else:
+            s = s.replace(',', '')
+    elif ',' in s:
+        parts = s.split(',')
+        s = s.replace(',', '.') if len(parts[-1]) == 2 else s.replace(',', '')
+    elif '.' in s:
+        parts = s.split('.')
+        if len(parts[-1]) != 2:
+            s = s.replace('.', '')
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+def extract_bca_ending_balance(raw_text, visual_text=""):
+    """Mengambil nominal SALDO AKHIR dari Rekening Koran BCA."""
+    for source_txt in (visual_text, raw_text):
+        if not source_txt:
+            continue
+        matches = re.findall(
+            r'SALDO\s+AKHIR\s*[:=\-]?\s*(?:Rp\.?\s*)?(\d{1,3}(?:[,\.]\d{3})*(?:[,\.]\d{2})?|\d+(?:[,\.]\d{2})?)',
+            source_txt,
+            flags=re.IGNORECASE,
+        )
+        if matches:
+            val = _parse_flexible_id_amount(matches[-1])
+            if val is not None:
+                return val
+    return None
+
+def extract_cc_statement_total(raw_text, visual_text=""):
+    """Mengambil nominal TOTAL TAGIHAN / TAGIHAN BARU dari Billing CC BCA."""
+    for source_txt in (visual_text, raw_text):
+        if not source_txt:
+            continue
+        matches = re.findall(
+            r'(?:TOTAL\s+TAGIHAN(?:\s+BARU)?|TAGIHAN\s+BARU|NEW\s+BALANCE)\s*[:=\-]?\s*(?:Rp\.?\s*)?(\d{1,3}(?:[,\.]\d{3})*(?:[,\.]\d{2})?|\d+(?:[,\.]\d{2})?)(\s*CR)?',
+            source_txt,
+            flags=re.IGNORECASE,
+        )
+        if matches:
+            amt_raw, cr_flag = matches[-1]
+            if cr_flag and cr_flag.strip().upper() == "CR":
+                return 0.0
+            val = _parse_flexible_id_amount(amt_raw)
+            if val is not None:
+                return val
+    return None
 
 def _mult_matrix(m1, m2):
     return [
@@ -1293,7 +1400,7 @@ clock_html = f"""
     --accent: {accent_color};
     --surface: {tab_bg};
   }}
-  * {{ box-sizing: border-box; }}
+- {{ box-sizing: border-box; }}
   html, body {{
     margin: 0; padding: 0; width: 100%; overflow: hidden;
     background: transparent; color: var(--text);
@@ -1575,6 +1682,8 @@ with tab1:
     if process_btn:
         with st.spinner("Memproses sinkronisasi data ke Google Sheets..."):
             added_count, duplicate_count, stockbit_count, stockbit_trx_count = 0, 0, 0, 0
+            detected_bca_ending = None
+            detected_cc_total = None
             
             # --- PROSES MUTASI BCA & KARTU KREDIT ---
             if uploaded_bank_files or uploaded_cc_files:
@@ -1594,17 +1703,23 @@ with tab1:
                 new_bank_rows = []
                 
                 if uploaded_bank_files:
+                    bank_balance_candidates = []
                     for uploaded_file in uploaded_bank_files:
                         temp_path = f"temp_{uploaded_file.name}"
                         with open(temp_path, "wb") as f:
                             f.write(uploaded_file.getbuffer())
                         reader = pypdf.PdfReader(temp_path)
                         raw_pdf_text = extract_pdf_text(reader)
+                        visual_pdf_text = extract_pdf_visual_lines(reader)
                         statement_year = infer_statement_year(raw_pdf_text)
                         if not raw_pdf_text.strip():
                             st.warning(f"Tidak ada teks yang bisa dibaca dari PDF rekening koran: {uploaded_file.name}.")
                             os.remove(temp_path)
                             continue
+
+                        ending_bal = extract_bca_ending_balance(raw_pdf_text, visual_pdf_text)
+                        max_stmt_ts = 0
+
                         text_lines = []
                         for line in raw_pdf_text.split('\n'):
                             l = line.strip()
@@ -1647,6 +1762,8 @@ with tab1:
                             except ValueError:
                                 continue
                             timestamp_ms = int(dt.timestamp() * 1000)
+                            if timestamp_ms > max_stmt_ts:
+                                max_stmt_ts = timestamp_ms
                             desc = clean_desc_v3(b_str)
                             cat_id = get_category_id_v2(desc, tx_type)
                             str_amount = str(int(round(amount)))
@@ -1666,10 +1783,18 @@ with tab1:
                             })
                             next_id += 1
                             added_count += 1
+
+                        if ending_bal is not None:
+                            bank_balance_candidates.append((max_stmt_ts, ending_bal))
                         os.remove(temp_path)
+
+                    if bank_balance_candidates:
+                        bank_balance_candidates.sort(key=lambda x: x[0])
+                        detected_bca_ending = bank_balance_candidates[-1][1]
 
                 if uploaded_cc_files:
                     months_map = {'JAN':1, 'FEB':2, 'MAR':3, 'APR':4, 'MEI':5, 'JUN':6, 'JUL':7, 'AUG':8, 'SEP':9, 'OCT':10, 'NOV':11, 'DEC':12, 'AGU':8, 'AGT':8, 'OKT':10, 'NOP':11, 'DES':12}
+                    cc_total_candidates = []
                     for uploaded_file in uploaded_cc_files:
                         temp_path = f"temp_cc_{uploaded_file.name}"
                         with open(temp_path, "wb") as f:
@@ -1683,9 +1808,14 @@ with tab1:
                                 if not decrypt_status:
                                     raise ValueError("Password PDF kartu kredit salah atau PDF tidak dapat dibuka.")
                             text = extract_pdf_text(reader)
+                            visual_cc_text = extract_pdf_visual_lines(reader)
                             statement_year = infer_statement_year(text)
                             if not text.strip():
                                 continue
+
+                            cc_stmt_total = extract_cc_statement_total(text, visual_cc_text)
+                            max_cc_ts = 0
+
                             lines = [l.strip() for l in text.split('\n') if l.strip()]
                             
                             for line in lines:
@@ -1711,6 +1841,8 @@ with tab1:
                                         except ValueError:
                                             continue
                                         timestamp_ms = int(dt.timestamp() * 1000)
+                                        if timestamp_ms > max_cc_ts:
+                                            max_cc_ts = timestamp_ms
                                         cleaned_cc_desc = clean_desc_v3(desc)
                                         cat_id = get_category_id_v2(cleaned_cc_desc, 0)
                                         str_amount = str(int(round(amount)))
@@ -1730,14 +1862,27 @@ with tab1:
                                         })
                                         next_id += 1
                                         added_count += 1
+
+                            if cc_stmt_total is not None:
+                                cc_total_candidates.append((max_cc_ts, cc_stmt_total))
                         finally:
                             if os.path.exists(temp_path):
                                 os.remove(temp_path)
+
+                    if cc_total_candidates:
+                        cc_total_candidates.sort(key=lambda x: x[0])
+                        detected_cc_total = cc_total_candidates[-1][1]
 
                 if new_bank_rows:
                     df_transact = pd.concat([df_transact, pd.DataFrame(new_bank_rows)], ignore_index=True)
                     save_sheet_df(df_transact, "TRANSACT", TRANSACT_COLS)
                     sync_work_db_from_df(df_transact)
+
+                if detected_bca_ending is not None or detected_cc_total is not None:
+                    curr_pos = load_cash_position()
+                    new_saldo_bca = detected_bca_ending if detected_bca_ending is not None else curr_pos['saldo_bca']
+                    new_tagihan_cc = detected_cc_total if detected_cc_total is not None else curr_pos['tagihan_cc']
+                    save_cash_position(new_saldo_bca, new_tagihan_cc, keterangan="Sinkronisasi PDF")
 
             # --- PROSES PORTFOLIO, TRANSAKSI & STOCK REPORT STOCKBIT ---
             if uploaded_stockbit_files:
@@ -1824,8 +1969,15 @@ with tab1:
                 save_sheet_df(df_port, "STOCK_PORTFOLIO", PORT_COLS)
                 save_sheet_df(df_trx, "STOCK_TRANSACTIONS", TRX_COLS)
                 sync_inv_db_from_dfs(df_port, df_trx)
-            
-            st.success(f"Sinkronisasi Google Sheets Selesai! | Transaksi Bank: {fmt_int(added_count)} (Duplikat: {fmt_int(duplicate_count)}) | Portofolio: {fmt_int(stockbit_count)} baris | Transaksi Harian: {fmt_int(stockbit_trx_count)} terekstrak")
+
+            extra_cash_notes = []
+            if detected_bca_ending is not None:
+                extra_cash_notes.append(f"Saldo Akhir BCA: {fmt_rp(detected_bca_ending)}")
+            if detected_cc_total is not None:
+                extra_cash_notes.append(f"Tagihan CC: {fmt_rp(detected_cc_total)}")
+            extra_str = f" | {' | '.join(extra_cash_notes)}" if extra_cash_notes else ""
+
+            st.success(f"Sinkronisasi Google Sheets Selesai! | Transaksi Bank: {fmt_int(added_count)} (Duplikat: {fmt_int(duplicate_count)}) | Portofolio: {fmt_int(stockbit_count)} baris | Transaksi Harian: {fmt_int(stockbit_trx_count)} terekstrak{extra_str}")
 
     ensure_local_dbs_ready()
     ts_download = get_wib_timestamp_label()
@@ -1859,6 +2011,46 @@ def render_dashboard():
     st.markdown("<h3>Analisis Cashflow</h3>", unsafe_allow_html=True)
     st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.75rem; letter-spacing: 1px;'>[ FINANCIAL METRICS INTERFACE ]</p>", unsafe_allow_html=True)
     st.write("")
+
+    # --- POSISI AKTUAL CASH (SALDO AKHIR BCA - TAGIHAN CC) ---
+    cash_pos = load_cash_position()
+    saldo_bca_val = cash_pos['saldo_bca']
+    tagihan_cc_val = cash_pos['tagihan_cc']
+    aktual_cash_val = saldo_bca_val - tagihan_cc_val
+
+    st.markdown("<div class='metric-section-label'>Posisi Aktual Cash (BCA − Kartu Kredit)</div>", unsafe_allow_html=True)
+    col_cash1, col_cash2, col_cash3 = st.columns(3)
+    col_cash1.metric("Saldo Akhir BCA", fmt_rp(saldo_bca_val))
+    col_cash2.metric("Tagihan CC", fmt_rp(tagihan_cc_val))
+    col_cash3.metric(
+        "Aktual Cash",
+        fmt_rp(aktual_cash_val),
+        delta="Surplus Kas" if aktual_cash_val >= 0 else "Defisit Tagihan CC",
+        delta_color="normal" if aktual_cash_val >= 0 else "inverse"
+    )
+
+    with st.expander(f"Update Manual Saldo BCA / Tagihan CC  •  Terakhir: {cash_pos['updated_at']}"):
+        with st.form("form_update_aktual_cash"):
+            u_col1, u_col2 = st.columns(2)
+            with u_col1:
+                input_saldo_bca = st.number_input(
+                    "Saldo Akhir BCA (Rp)",
+                    min_value=0.0,
+                    value=float(saldo_bca_val),
+                    step=50000.0
+                )
+            with u_col2:
+                input_tagihan_cc = st.number_input(
+                    "Tagihan CC Berjalan (Rp)",
+                    min_value=0.0,
+                    value=float(tagihan_cc_val),
+                    step=50000.0
+                )
+            if st.form_submit_button("Simpan Posisi Aktual Cash", type="primary", use_container_width=True):
+                save_cash_position(input_saldo_bca, input_tagihan_cc, keterangan="Update Manual")
+                st.rerun()
+
+    st.divider()
     
     df = load_or_seed_transact()
     cat_map = get_category_map()
