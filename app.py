@@ -152,6 +152,37 @@ st.markdown(f"""
         margin-top: 1.1rem;
     }}
 
+    .health-diagnosis-card {{
+        background: {card_bg};
+        border: 1px solid {border_color};
+        border-left: 4px solid {accent_color};
+        border-radius: 14px;
+        padding: 15px 18px;
+        margin-top: 0.75rem;
+        margin-bottom: 0.45rem;
+        box-shadow: {shadow_box};
+    }}
+    .health-diagnosis-title {{
+        font-size: 0.85rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        color: {text_color} !important;
+        margin-bottom: 0.35rem;
+    }}
+    .health-diagnosis-list {{
+        margin: 0;
+        padding-left: 1.15rem;
+    }}
+    .health-diagnosis-list li {{
+        color: {sub_text} !important;
+        font-size: 0.84rem;
+        line-height: 1.48;
+        margin-bottom: 0.25rem;
+    }}
+    .health-diagnosis-list li strong {{
+        color: {text_color} !important;
+    }}
+
     /* Metric cards */
     div[data-testid="stMetric"] {{
         background: {card_bg};
@@ -517,9 +548,10 @@ def fmt_trx_amount(val):
 BASE_DB = 'CK(18-10-2026-132328).ckbak'
 WORK_DB = 'CK_Working.ckbak'
 INV_DB = 'INV_Working.db'
+DEFAULT_CC_LIMIT = 15_000_000.0
 
 TRANSACT_COLS = ['_id', 'id_category', 'desc', 'type', 'date', 'amount']
-CASH_POS_COLS = ['updated_at', 'saldo_bca', 'tagihan_cc', 'aktual_cash', 'keterangan']
+CASH_POS_COLS = ['updated_at', 'saldo_bca', 'tagihan_cc', 'limit_cc_plafon', 'aktual_cash', 'keterangan']
 PORT_COLS = [
     'period_str', 'timestamp', 'symbol', 'qty', 'avg_price', 'last_price',
     'buy_value', 'market_value', 'unrealized_rp', 'unrealized_pct',
@@ -583,10 +615,13 @@ def get_sheet_df(sheet_name, expected_cols):
         df = read_worksheet_cached(sheet_name).copy()
         if df.empty:
             return pd.DataFrame(columns=expected_cols)
-        numeric_defaults = {'total_modal', 'total_aset', 'total_unrealized_rp', 'equity_nab', 'saldo_bca', 'tagihan_cc', 'aktual_cash'}
+        numeric_defaults = {
+            'total_modal', 'total_aset', 'total_unrealized_rp', 'equity_nab',
+            'saldo_bca', 'tagihan_cc', 'limit_cc_plafon', 'aktual_cash'
+        }
         for col in expected_cols:
             if col not in df.columns:
-                df[col] = 0.0 if col in numeric_defaults else ""
+                df[col] = DEFAULT_CC_LIMIT if col == 'limit_cc_plafon' else (0.0 if col in numeric_defaults else "")
         return df[expected_cols]
     except Exception as e:
         st.warning(f"Catatan koneksi sheet '{sheet_name}': pastikan tab '{sheet_name}' sudah dibuat di Google Sheets. ({e})")
@@ -601,7 +636,7 @@ def save_sheet_df(df, sheet_name, expected_cols):
         conn_gsheets.create(worksheet=sheet_name, data=out_df)
     read_worksheet_cached.clear()
 
-# --- CASH POSITION (SALDO AKHIR BCA - TAGIHAN CC = AKTUAL CASH) ---
+# --- CASH POSITION & FINANCIAL HEALTH ANALYTICS ---
 def load_cash_position():
     if 'cash_pos_state' in st.session_state:
         return st.session_state['cash_pos_state']
@@ -609,9 +644,12 @@ def load_cash_position():
         df = read_worksheet_cached("CASH_POSITION").copy()
         if not df.empty:
             last = df.iloc[-1]
+            raw_limit = pd.to_numeric(last.get('limit_cc_plafon', DEFAULT_CC_LIMIT), errors='coerce')
+            limit_plafon = float(raw_limit) if (pd.notna(raw_limit) and float(raw_limit) > 0) else DEFAULT_CC_LIMIT
             state = {
                 'saldo_bca': float(pd.to_numeric(last.get('saldo_bca', 0), errors='coerce') or 0.0),
                 'tagihan_cc': float(pd.to_numeric(last.get('tagihan_cc', 0), errors='coerce') or 0.0),
+                'limit_cc_plafon': limit_plafon,
                 'updated_at': str(last.get('updated_at', '-')),
                 'keterangan': str(last.get('keterangan', '-')),
             }
@@ -622,19 +660,22 @@ def load_cash_position():
     return {
         'saldo_bca': 0.0,
         'tagihan_cc': 0.0,
+        'limit_cc_plafon': DEFAULT_CC_LIMIT,
         'updated_at': 'Belum ada data',
         'keterangan': '-',
     }
 
-def save_cash_position(saldo_bca, tagihan_cc, keterangan="Update Manual"):
+def save_cash_position(saldo_bca, tagihan_cc, limit_cc_plafon=DEFAULT_CC_LIMIT, keterangan="Update Manual"):
     now_wib = datetime.datetime.now(WIB_TZ).strftime("%d/%m/%Y %H:%M WIB")
     s_bca = float(saldo_bca or 0.0)
     t_cc = float(tagihan_cc or 0.0)
+    l_plafon = float(limit_cc_plafon) if (limit_cc_plafon and float(limit_cc_plafon) > 0) else DEFAULT_CC_LIMIT
     a_cash = s_bca - t_cc
 
     state = {
         'saldo_bca': s_bca,
         'tagihan_cc': t_cc,
+        'limit_cc_plafon': l_plafon,
         'updated_at': now_wib,
         'keterangan': keterangan,
     }
@@ -644,10 +685,174 @@ def save_cash_position(saldo_bca, tagihan_cc, keterangan="Update Manual"):
         'updated_at': now_wib,
         'saldo_bca': round(s_bca, 2),
         'tagihan_cc': round(t_cc, 2),
+        'limit_cc_plafon': round(l_plafon, 2),
         'aktual_cash': round(a_cash, 2),
         'keterangan': keterangan,
     }])
     save_sheet_df(df_pos, "CASH_POSITION", CASH_POS_COLS)
+
+def analyze_loan_health(saldo_bca, limit_used, limit_plafon, df_transact, df_port):
+    """Menganalisis kesehatan pinjaman berdasarkan 4 kerangka teori keuangan."""
+    limit_plafon = limit_plafon if limit_plafon > 0 else DEFAULT_CC_LIMIT
+    aktual_cash = saldo_bca - limit_used
+    sisa_limit = max(0.0, limit_plafon - limit_used)
+
+    # 1. Cash Coverage Ratio (Likuiditas Jangka Pendek)
+    if limit_used <= 0:
+        coverage_pct = 100.0
+        coverage_status = "Likuid Penuh"
+        coverage_color = "normal"
+    else:
+        coverage_pct = (saldo_bca / limit_used) * 100.0
+        if coverage_pct >= 100.0:
+            coverage_status = "Likuid (100%+ Tertutup)"
+            coverage_color = "normal"
+        elif coverage_pct >= 30.0:
+            coverage_status = "Likuiditas Moderat"
+            coverage_color = "off"
+        else:
+            coverage_status = "Defisit Likuiditas Tunai"
+            coverage_color = "inverse"
+
+    # 2. Credit Utilization Ratio / CUR (Kapasitas Kredit FICO / SLIK)
+    cur_pct = (limit_used / limit_plafon) * 100.0
+    if cur_pct <= 30.0:
+        cur_status = "Sehat (≤ 30%)"
+        cur_color = "normal"
+    elif cur_pct <= 50.0:
+        cur_status = "Waspada (30–50%)"
+        cur_color = "off"
+    elif cur_pct <= 80.0:
+        cur_status = "Risiko Tinggi (50–80%)"
+        cur_color = "inverse"
+    else:
+        cur_status = "Kritis (> 80% Limit)"
+        cur_color = "inverse"
+
+    # 3. Debt-to-Income Exposure (Kapasitas Arus Kas CFP dari data TRANSACT)
+    avg_monthly_income = 0.0
+    if not df_transact.empty:
+        df_inc = df_transact.copy()
+        df_inc['type'] = pd.to_numeric(df_inc['type'], errors='coerce').fillna(0).astype(int)
+        df_inc['id_category'] = pd.to_numeric(df_inc['id_category'], errors='coerce').fillna(0).astype(int)
+        df_inc['amount'] = pd.to_numeric(df_inc['amount'], errors='coerce').fillna(0.0)
+        df_inc['dt'] = pd.to_datetime(pd.to_numeric(df_inc['date'], errors='coerce'), unit='ms', errors='coerce')
+        # Exclude internal penyesuaian/pencairan investasi agar mencerminkan pemasukan riil
+        df_inc = df_inc[(df_inc['type'] == 1) & (~df_inc['id_category'].isin([41, 42])) & df_inc['dt'].notnull()]
+        if not df_inc.empty:
+            latest_yr = int(df_inc['dt'].dt.year.max())
+            df_yr_inc = df_inc[df_inc['dt'].dt.year == latest_yr]
+            active_months = max(int(df_yr_inc['dt'].dt.month.nunique()), 1)
+            avg_monthly_income = float(df_yr_inc['amount'].sum()) / active_months
+
+    if avg_monthly_income > 0:
+        dti_pct = (limit_used / avg_monthly_income) * 100.0
+        if dti_pct <= 30.0:
+            dti_status = "Aman (≤ 30% Income)"
+            dti_color = "normal"
+        elif dti_pct <= 100.0:
+            dti_status = "Terkelola (Wajib Cicilan 0%)"
+            dti_color = "off"
+        else:
+            dti_status = "Tekanan Arus Kas (> 1x Gaji)"
+            dti_color = "inverse"
+    else:
+        dti_pct = None
+        dti_status = "Data Income Kosong"
+        dti_color = "off"
+
+    # 4. Balance Sheet Solvency / Net Liquid Worth (Solvabilitas Neraca Pribadi)
+    latest_equity = 0.0
+    latest_period_label = "-"
+    if not df_port.empty:
+        df_p = df_port.copy()
+        for col in ('equity_nab', 'total_aset', 'market_value'):
+            df_p[col] = pd.to_numeric(df_p[col], errors='coerce').fillna(0.0)
+        periods_sorted = sorted(df_p['period_str'].astype(str).unique(), key=period_str_to_end_date, reverse=True)
+        if periods_sorted:
+            latest_period_label = periods_sorted[0]
+            sub_latest = df_p[df_p['period_str'] == latest_period_label]
+            nab_val = float(sub_latest['equity_nab'].max())
+            aset_val = float(sub_latest['total_aset'].iloc[0]) if float(sub_latest['total_aset'].iloc[0]) > 0 else float(sub_latest['market_value'].sum())
+            latest_equity = nab_val if nab_val > 0 else aset_val
+
+    net_liquid_worth = aktual_cash + latest_equity
+    if latest_equity > 0:
+        if net_liquid_worth >= 0:
+            solvency_status = f"Solven (+Portofolio {latest_period_label})"
+            solvency_color = "normal"
+        else:
+            solvency_status = "Defisit Ekuitas Likuid"
+            solvency_color = "inverse"
+    else:
+        solvency_status = "Tanpa Data Portofolio" if aktual_cash < 0 else "Solven Tunai"
+        solvency_color = "inverse" if aktual_cash < 0 else "normal"
+
+    # Ringkasan Diagnosis Naratif
+    insights = []
+    if aktual_cash < 0:
+        insights.append(
+            f"<strong>Likuiditas Tunai (Cash Coverage {fmt_pct(coverage_pct)}):</strong> "
+            f"Saldo BCA ({fmt_rp(saldo_bca)}) belum menutup total limit terpakai ({fmt_rp(limit_used)}), "
+            f"menyisakan gap kas sebesar <strong>{fmt_rp(abs(aktual_cash))}</strong>."
+        )
+    else:
+        insights.append(
+            f"<strong>Likuiditas Tunai (Cash Coverage {fmt_pct(coverage_pct)}):</strong> "
+            f"Saldo BCA ({fmt_rp(saldo_bca)}) mencukupi untuk menutup seluruh limit CC terpakai ({fmt_rp(limit_used)})."
+        )
+
+    insights.append(
+        f"<strong>Utilisasi Kredit / CUR ({fmt_pct(cur_pct)} dari Plafon {fmt_rp(limit_plafon)}):</strong> "
+        f"Sisa limit tersisa <strong>{fmt_rp(sisa_limit)}</strong>. "
+        + (
+            "Utilisasi sudah melewati ambang 80% (zona kritis); tahan transaksi kredit baru agar ruang darurat tidak habis."
+            if cur_pct > 80.0 else
+            "Utilisasi di atas batas ideal 30%; prioritaskan pelunasan pokok berjalan."
+            if cur_pct > 30.0 else
+            "Utilisasi berada di zona sehat perbankan (≤ 30%)."
+        )
+    )
+
+    if dti_pct is not None:
+        insights.append(
+            f"<strong>Kapasitas Arus Kas (Rasio Eksposur {fmt_pct(dti_pct)} terhadap rata-rata pemasukan {fmt_rp(avg_monthly_income)}/bln):</strong> "
+            + (
+                "Pastikan cicilan bulanan + tagihan non-cicilan jatuh tempo bulan ini tidak melampaui 30% pemasukan bulanan dan selalu dibayar <em>full payment</em> agar bebas bunga ritel 1,75%/bulan."
+                if dti_pct > 30.0 else
+                "Total eksposur CC masih dalam kapasitas aman arus kas bulanan (≤ 30%)."
+            )
+        )
+
+    if latest_equity > 0:
+        if net_liquid_worth >= 0:
+            insights.append(
+                f"<strong>Solvabilitas Neraca (Net Liquid Worth {fmt_rp(net_liquid_worth)}):</strong> "
+                f"Secara kekayaan likuid bersih (BCA + Ekuitas Stockbit {fmt_rp(latest_equity)}), posisi Anda <strong>masih solven</strong>; defisit kas terjadi karena dana lebih banyak teralokasi di aset investasi."
+            )
+        else:
+            insights.append(
+                f"<strong>Solvabilitas Neraca (Net Liquid Worth {fmt_rp(net_liquid_worth)}):</strong> "
+                f"Gabungan kas BCA dan ekuitas portofolio ({fmt_rp(latest_equity)}) masih di bawah total eksposur CC ({fmt_rp(limit_used)}); fokuskan arus kas masuk berikutnya untuk menurunkan saldo utang CC."
+            )
+
+    return {
+        'aktual_cash': aktual_cash,
+        'sisa_limit': sisa_limit,
+        'coverage_pct': coverage_pct,
+        'coverage_status': coverage_status,
+        'coverage_color': coverage_color,
+        'cur_pct': cur_pct,
+        'cur_status': cur_status,
+        'cur_color': cur_color,
+        'dti_pct': dti_pct,
+        'dti_status': dti_status,
+        'dti_color': dti_color,
+        'net_liquid_worth': net_liquid_worth,
+        'solvency_status': solvency_status,
+        'solvency_color': solvency_color,
+        'insights': insights,
+    }
 
 def get_bank_connection():
     return sqlite3.connect(WORK_DB)
@@ -1882,7 +2087,12 @@ with tab1:
                     curr_pos = load_cash_position()
                     new_saldo_bca = detected_bca_ending if detected_bca_ending is not None else curr_pos['saldo_bca']
                     new_tagihan_cc = detected_cc_total if detected_cc_total is not None else curr_pos['tagihan_cc']
-                    save_cash_position(new_saldo_bca, new_tagihan_cc, keterangan="Sinkronisasi PDF")
+                    save_cash_position(
+                        new_saldo_bca,
+                        new_tagihan_cc,
+                        limit_cc_plafon=curr_pos.get('limit_cc_plafon', DEFAULT_CC_LIMIT),
+                        keterangan="Sinkronisasi PDF"
+                    )
 
             # --- PROSES PORTFOLIO, TRANSAKSI & STOCK REPORT STOCKBIT ---
             if uploaded_stockbit_files:
@@ -2012,26 +2222,84 @@ def render_dashboard():
     st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.75rem; letter-spacing: 1px;'>[ FINANCIAL METRICS INTERFACE ]</p>", unsafe_allow_html=True)
     st.write("")
 
-    # --- POSISI AKTUAL CASH (SALDO AKHIR BCA - TAGIHAN CC) ---
+    df = load_or_seed_transact()
+    df_port_for_health = get_sheet_df("STOCK_PORTFOLIO", PORT_COLS)
+
+    # --- POSISI AKTUAL CASH (SALDO AKHIR BCA - LIMIT CC TERPAKAI) ---
     cash_pos = load_cash_position()
     saldo_bca_val = cash_pos['saldo_bca']
-    tagihan_cc_val = cash_pos['tagihan_cc']
-    aktual_cash_val = saldo_bca_val - tagihan_cc_val
+    limit_used_val = cash_pos['tagihan_cc']
+    limit_plafon_val = cash_pos.get('limit_cc_plafon', DEFAULT_CC_LIMIT)
 
-    st.markdown("<div class='metric-section-label'>Posisi Aktual Cash (BCA − Kartu Kredit)</div>", unsafe_allow_html=True)
+    health = analyze_loan_health(
+        saldo_bca=saldo_bca_val,
+        limit_used=limit_used_val,
+        limit_plafon=limit_plafon_val,
+        df_transact=df,
+        df_port=df_port_for_health
+    )
+    aktual_cash_val = health['aktual_cash']
+
+    st.markdown("<div class='metric-section-label'>Posisi Aktual Cash (BCA − Limit CC Terpakai)</div>", unsafe_allow_html=True)
     col_cash1, col_cash2, col_cash3 = st.columns(3)
     col_cash1.metric("Saldo Akhir BCA", fmt_rp(saldo_bca_val))
-    col_cash2.metric("Tagihan CC", fmt_rp(tagihan_cc_val))
+    col_cash2.metric(
+        "Limit CC Terpakai",
+        fmt_rp(limit_used_val),
+        delta=f"Sisa Limit: {fmt_rp(health['sisa_limit'])}",
+        delta_color="off"
+    )
     col_cash3.metric(
         "Aktual Cash",
         fmt_rp(aktual_cash_val),
-        delta="Surplus Kas" if aktual_cash_val >= 0 else "Defisit Tagihan CC",
+        delta="Surplus Kas" if aktual_cash_val >= 0 else "Defisit Likuiditas",
         delta_color="normal" if aktual_cash_val >= 0 else "inverse"
     )
 
-    with st.expander(f"Update Manual Saldo BCA / Tagihan CC  •  Terakhir: {cash_pos['updated_at']}"):
+    # --- ANALISIS KESEHATAN PINJAMAN & LIKUIDITAS REAL-TIME ---
+    st.markdown("<div class='metric-section-label secondary'>Analisis Kesehatan Pinjaman & Likuiditas</div>", unsafe_allow_html=True)
+    h1, h2, h3, h4 = st.columns(4)
+    h1.metric(
+        "Cash Coverage Ratio",
+        fmt_pct(health['coverage_pct']),
+        delta=health['coverage_status'],
+        delta_color=health['coverage_color']
+    )
+    h2.metric(
+        "Credit Utilization (CUR)",
+        fmt_pct(health['cur_pct']),
+        delta=health['cur_status'],
+        delta_color=health['cur_color']
+    )
+    h3.metric(
+        "Eksposur CC / Income",
+        fmt_pct(health['dti_pct']) if health['dti_pct'] is not None else "N/A",
+        delta=health['dti_status'],
+        delta_color=health['dti_color']
+    )
+    h4.metric(
+        "Net Liquid Worth",
+        fmt_rp(health['net_liquid_worth']),
+        delta=health['solvency_status'],
+        delta_color=health['solvency_color']
+    )
+
+    insights_html = "".join(f"<li>{item}</li>" for item in health['insights'])
+    st.markdown(
+        f"""
+        <div class="health-diagnosis-card">
+            <div class="health-diagnosis-title">Diagnosis Kesehatan Pinjaman & Likuiditas (Plafon CC {fmt_rp(limit_plafon_val)})</div>
+            <ul class="health-diagnosis-list">
+                {insights_html}
+            </ul>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    with st.expander(f"Update Manual Saldo BCA / Limit CC Terpakai  •  Terakhir: {cash_pos['updated_at']}"):
         with st.form("form_update_aktual_cash"):
-            u_col1, u_col2 = st.columns(2)
+            u_col1, u_col2, u_col3 = st.columns(3)
             with u_col1:
                 input_saldo_bca = st.number_input(
                     "Saldo Akhir BCA (Rp)",
@@ -2040,19 +2308,32 @@ def render_dashboard():
                     step=50000.0
                 )
             with u_col2:
-                input_tagihan_cc = st.number_input(
-                    "Tagihan CC Berjalan (Rp)",
+                input_limit_used = st.number_input(
+                    "Limit CC Terpakai (Rp)",
                     min_value=0.0,
-                    value=float(tagihan_cc_val),
-                    step=50000.0
+                    value=float(limit_used_val),
+                    step=50000.0,
+                    help="Total limit kartu kredit yang sudah terpakai (termasuk pokok cicilan berjalan)."
                 )
-            if st.form_submit_button("Simpan Posisi Aktual Cash", type="primary", use_container_width=True):
-                save_cash_position(input_saldo_bca, input_tagihan_cc, keterangan="Update Manual")
+            with u_col3:
+                input_limit_plafon = st.number_input(
+                    "Plafon Limit CC (Rp)",
+                    min_value=1000000.0,
+                    value=float(limit_plafon_val),
+                    step=1000000.0,
+                    help="Total batas limit kartu kredit BCA (default Rp 15.000.000)."
+                )
+            if st.form_submit_button("Simpan & Hitung Ulang Kesehatan Finansial", type="primary", use_container_width=True):
+                save_cash_position(
+                    input_saldo_bca,
+                    input_limit_used,
+                    limit_cc_plafon=input_limit_plafon,
+                    keterangan="Update Manual"
+                )
                 st.rerun()
 
     st.divider()
     
-    df = load_or_seed_transact()
     cat_map = get_category_map()
     
     if not df.empty:
