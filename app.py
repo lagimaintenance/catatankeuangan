@@ -552,6 +552,7 @@ DEFAULT_CC_LIMIT = 15_000_000.0
 
 TRANSACT_COLS = ['_id', 'id_category', 'desc', 'type', 'date', 'amount']
 CASH_POS_COLS = ['updated_at', 'saldo_bca', 'tagihan_cc', 'limit_cc_plafon', 'aktual_cash', 'keterangan']
+RULES_COLS = ['keyword', 'tx_type', 'id_category', 'category_name', 'updated_at']
 PORT_COLS = [
     'period_str', 'timestamp', 'symbol', 'qty', 'avg_price', 'last_price',
     'buy_value', 'market_value', 'unrealized_rp', 'unrealized_pct',
@@ -610,7 +611,7 @@ def read_worksheet_cached(sheet_name):
     df = conn_gsheets.read(worksheet=sheet_name, ttl=0)
     return df.dropna(how='all')
 
-def get_sheet_df(sheet_name, expected_cols):
+def get_sheet_df(sheet_name, expected_cols, silent_missing=False):
     try:
         df = read_worksheet_cached(sheet_name).copy()
         if df.empty:
@@ -624,7 +625,8 @@ def get_sheet_df(sheet_name, expected_cols):
                 df[col] = DEFAULT_CC_LIMIT if col == 'limit_cc_plafon' else (0.0 if col in numeric_defaults else "")
         return df[expected_cols]
     except Exception as e:
-        st.warning(f"Catatan koneksi sheet '{sheet_name}': pastikan tab '{sheet_name}' sudah dibuat di Google Sheets. ({e})")
+        if not silent_missing:
+            st.warning(f"Catatan koneksi sheet '{sheet_name}': pastikan tab '{sheet_name}' sudah dibuat di Google Sheets. ({e})")
         return pd.DataFrame(columns=expected_cols)
 
 def save_sheet_df(df, sheet_name, expected_cols):
@@ -635,6 +637,188 @@ def save_sheet_df(df, sheet_name, expected_cols):
     except Exception:
         conn_gsheets.create(worksheet=sheet_name, data=out_df)
     read_worksheet_cached.clear()
+
+# --- CATEGORY CATALOG & SELF-LEARNING RULE ENGINE ---
+def get_category_catalog():
+    rows = DEFAULT_CATEGORIES
+    if os.path.exists(WORK_DB):
+        try:
+            conn = get_bank_connection()
+            df_cat = pd.read_sql_query("SELECT _id, NAME, TYPE FROM CATEGORY", conn)
+            conn.close()
+            if not df_cat.empty:
+                rows = [
+                    (int(r['_id']), str(r['NAME']).strip(), int(pd.to_numeric(r['TYPE'], errors='coerce') or 0))
+                    for _, r in df_cat.iterrows()
+                    if pd.notna(r['_id']) and str(r['NAME']).strip()
+                ]
+        except Exception:
+            pass
+
+    id_to_name = {}
+    expense_name_to_id = {}
+    income_name_to_id = {}
+
+    for cid, cname, ctype in rows:
+        id_to_name[cid] = cname
+        if ctype == 1:
+            # Prioritaskan ID 3 untuk Gaji agar konsisten dengan get_category_id_v2
+            if cname not in income_name_to_id or cid == 3:
+                income_name_to_id[cname] = cid
+        else:
+            if cname not in expense_name_to_id:
+                expense_name_to_id[cname] = cid
+
+    # Investasi (42) dipakai untuk aliran masuk & keluar RDN/Stockbit
+    if 'Investasi' not in income_name_to_id and 'Investasi' in expense_name_to_id:
+        income_name_to_id['Investasi'] = expense_name_to_id['Investasi']
+
+    def _sort_names(names):
+        return sorted(names, key=lambda n: (n.lower() == 'lain-lain', n.lower()))
+
+    expense_options = _sort_names(list(expense_name_to_id.keys()))
+    income_options = _sort_names(list(income_name_to_id.keys()))
+    all_options = _sort_names(list(set(expense_options) | set(income_options)))
+
+    return {
+        'id_to_name': id_to_name,
+        'expense_name_to_id': expense_name_to_id,
+        'income_name_to_id': income_name_to_id,
+        'expense_options': expense_options,
+        'income_options': income_options,
+        'all_options': all_options,
+    }
+
+def resolve_category_id(category_name, tx_type, catalog=None):
+    catalog = catalog or get_category_catalog()
+    cname = str(category_name or '').strip()
+    if int(tx_type) == 1:
+        if cname in catalog['income_name_to_id']:
+            return int(catalog['income_name_to_id'][cname])
+        if cname in catalog['expense_name_to_id']:
+            return int(catalog['expense_name_to_id'][cname])
+        return 12
+    else:
+        if cname in catalog['expense_name_to_id']:
+            return int(catalog['expense_name_to_id'][cname])
+        if cname in catalog['income_name_to_id']:
+            return int(catalog['income_name_to_id'][cname])
+        return 39
+
+def suggest_rule_keyword(desc):
+    """Mengekstrak kata kunci bersih dari deskripsi mutasi agar bisa dipakai ulang lintas periode."""
+    raw = re.sub(r'\s+', ' ', str(desc or '')).strip().lower()
+    if not raw:
+        return ""
+    s = re.sub(r'\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b', ' ', raw)
+    s = re.sub(r'\b\d{4,}\b', ' ', s)
+    tokens = []
+    stop_tokens = {'qris', 'qr', 'trf', 'transfer', 'pembayaran', 'topup', 'id', 'no', 'ref', 'inv', 'pt', 'cv', 'tbk'}
+    for tok in s.split():
+        clean_tok = tok.strip(".,-_:;()[]{}/\\")
+        if not clean_tok:
+            continue
+        # Buang kode referensi alfanumerik acak (misal: 261115abc123)
+        if len(clean_tok) >= 6 and any(c.isdigit() for c in clean_tok) and any(c.isalpha() for c in clean_tok):
+            continue
+        if clean_tok in stop_tokens:
+            continue
+        tokens.append(clean_tok)
+    candidate = " ".join(tokens).strip()
+    return candidate if len(candidate) >= 2 else raw
+
+def keyword_matches_desc(keyword, desc):
+    kw = str(keyword or '').strip().lower()
+    target = str(desc or '').strip().lower()
+    if not kw or not target:
+        return False
+    if len(kw) <= 3:
+        return bool(re.search(rf'\b{re.escape(kw)}\b', target))
+    return kw in target
+
+def load_category_rules():
+    df = get_sheet_df("CATEGORY_RULES", RULES_COLS, silent_missing=True)
+    if df.empty:
+        return pd.DataFrame(columns=RULES_COLS)
+    df = df.copy()
+    df['keyword'] = df['keyword'].astype(str).str.strip().str.lower()
+    df['tx_type'] = pd.to_numeric(df['tx_type'], errors='coerce').fillna(0).astype(int)
+    df['id_category'] = pd.to_numeric(df['id_category'], errors='coerce').fillna(0).astype(int)
+    df['category_name'] = df['category_name'].astype(str).str.strip()
+    df['updated_at'] = df['updated_at'].astype(str).str.strip()
+    df = df[(df['keyword'] != '') & (df['id_category'] > 0)]
+    df = df.drop_duplicates(subset=['keyword', 'tx_type'], keep='last').reset_index(drop=True)
+    return df[RULES_COLS]
+
+def save_category_rules(df_rules):
+    if df_rules.empty:
+        save_sheet_df(pd.DataFrame(columns=RULES_COLS), "CATEGORY_RULES", RULES_COLS)
+        return
+    clean_df = df_rules.copy()
+    clean_df['keyword'] = clean_df['keyword'].astype(str).str.strip().str.lower()
+    clean_df['tx_type'] = pd.to_numeric(clean_df['tx_type'], errors='coerce').fillna(0).astype(int)
+    clean_df['id_category'] = pd.to_numeric(clean_df['id_category'], errors='coerce').fillna(0).astype(int)
+    clean_df['category_name'] = clean_df['category_name'].astype(str).str.strip()
+    clean_df['updated_at'] = clean_df['updated_at'].astype(str).str.strip()
+    clean_df = clean_df[(clean_df['keyword'] != '') & (clean_df['id_category'] > 0)]
+    clean_df = clean_df.drop_duplicates(subset=['keyword', 'tx_type'], keep='last').reset_index(drop=True)
+    save_sheet_df(clean_df, "CATEGORY_RULES", RULES_COLS)
+
+def upsert_rules_and_apply_retroactive(df_transact, rule_items, direct_id_updates=None):
+    """
+    Menyimpan aturan baru/update ke CATEGORY_RULES dan langsung menerapkan ke seluruh
+    transaksi lama yang cocok di TRANSACT + sinkronisasi CK_Working.ckbak.
+    """
+    now_wib = datetime.datetime.now(WIB_TZ).strftime("%d/%m/%Y %H:%M WIB")
+    catalog = get_category_catalog()
+    df_rules = load_category_rules()
+
+    new_rule_rows = []
+    for item in rule_items:
+        kw = str(item.get('keyword', '')).strip().lower()
+        tx_t = 1 if int(item.get('tx_type', 0)) == 1 else 0
+        cat_id = int(item.get('id_category', 0))
+        cat_name = item.get('category_name') or catalog['id_to_name'].get(cat_id, 'Lain-lain')
+        if kw and cat_id > 0:
+            new_rule_rows.append({
+                'keyword': kw,
+                'tx_type': tx_t,
+                'id_category': cat_id,
+                'category_name': cat_name,
+                'updated_at': now_wib,
+            })
+
+    if new_rule_rows:
+        df_rules = pd.concat([df_rules, pd.DataFrame(new_rule_rows)], ignore_index=True)
+        save_category_rules(df_rules)
+
+    if df_transact.empty:
+        return df_transact, 0
+
+    df_updated = df_transact.copy()
+    df_updated['_id'] = pd.to_numeric(df_updated['_id'], errors='coerce').fillna(0).astype(int)
+    df_updated['type'] = pd.to_numeric(df_updated['type'], errors='coerce').fillna(0).astype(int)
+    df_updated['id_category'] = pd.to_numeric(df_updated['id_category'], errors='coerce').fillna(0).astype(int)
+    orig_cats = df_updated['id_category'].copy()
+
+    # 1. Terapkan update langsung pada baris yang diedit secara eksplisit
+    if direct_id_updates:
+        for tx_id, target_cat_id in direct_id_updates.items():
+            df_updated.loc[df_updated['_id'] == int(tx_id), 'id_category'] = int(target_cat_id)
+
+    # 2. Terapkan retroaktif otomatis untuk semua transaksi dengan kata kunci yang sama
+    for r in new_rule_rows:
+        kw = r['keyword']
+        tx_t = r['tx_type']
+        target_cat_id = r['id_category']
+        mask_type = (df_updated['type'] == tx_t)
+        mask_kw = df_updated['desc'].astype(str).apply(lambda d: keyword_matches_desc(kw, d))
+        df_updated.loc[mask_type & mask_kw, 'id_category'] = target_cat_id
+
+    affected_count = int((df_updated['id_category'] != orig_cats).sum())
+    save_sheet_df(df_updated, "TRANSACT", TRANSACT_COLS)
+    sync_work_db_from_df(df_updated)
+    return df_updated, affected_count
 
 # --- CASH POSITION & FINANCIAL HEALTH ANALYTICS ---
 def load_cash_position():
@@ -737,7 +921,6 @@ def analyze_loan_health(saldo_bca, limit_used, limit_plafon, df_transact, df_por
         df_inc['id_category'] = pd.to_numeric(df_inc['id_category'], errors='coerce').fillna(0).astype(int)
         df_inc['amount'] = pd.to_numeric(df_inc['amount'], errors='coerce').fillna(0.0)
         df_inc['dt'] = pd.to_datetime(pd.to_numeric(df_inc['date'], errors='coerce'), unit='ms', errors='coerce')
-        # Exclude internal penyesuaian/pencairan investasi agar mencerminkan pemasukan riil
         df_inc = df_inc[(df_inc['type'] == 1) & (~df_inc['id_category'].isin([41, 42])) & df_inc['dt'].notnull()]
         if not df_inc.empty:
             latest_yr = int(df_inc['dt'].dt.year.max())
@@ -788,7 +971,6 @@ def analyze_loan_health(saldo_bca, limit_used, limit_plafon, df_transact, df_por
         solvency_status = "Tanpa Data Portofolio" if aktual_cash < 0 else "Solven Tunai"
         solvency_color = "inverse" if aktual_cash < 0 else "normal"
 
-    # Ringkasan Diagnosis Naratif
     insights = []
     if aktual_cash < 0:
         insights.append(
@@ -858,12 +1040,7 @@ def get_bank_connection():
     return sqlite3.connect(WORK_DB)
 
 def get_category_map():
-    if os.path.exists(WORK_DB):
-        conn = get_bank_connection()
-        df_cat = pd.read_sql_query("SELECT _id, NAME FROM CATEGORY", conn)
-        conn.close()
-        return dict(zip(df_cat['_id'].astype(int), df_cat['NAME']))
-    return {}
+    return get_category_catalog()['id_to_name']
 
 def load_or_seed_transact():
     df_gs = get_sheet_df("TRANSACT", TRANSACT_COLS)
@@ -881,7 +1058,6 @@ def optimize_sqlite_for_android(db_path):
         return
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
-    # Pastikan sqlite_sequence sinkron dengan MAX(_id) pada setiap tabel autoincrement
     has_seq = cur.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_sequence';"
     ).fetchone()
@@ -904,7 +1080,6 @@ def optimize_sqlite_for_android(db_path):
     conn.commit()
     conn.close()
 
-    # Jalankan journal_mode=DELETE & VACUUM di luar blok transaksi aktif
     conn_vac = sqlite3.connect(db_path, isolation_level=None)
     cur_vac = conn_vac.cursor()
     cur_vac.execute("PRAGMA wal_checkpoint(TRUNCATE);")
@@ -1568,6 +1743,18 @@ def get_category_id_v2(desc, tx_type):
         elif any(k in d for k in ['bea meterai', 'biaya adm', 'koreksi bunga', 'biaya kartu', 'tarikan atm', 'tarik tunai']): return 39
         else: return 39
 
+def classify_transaction_category(desc, tx_type, custom_rules=None):
+    """Prioritaskan aturan kustom dari CATEGORY_RULES sebelum turun ke aturan bawaan."""
+    if custom_rules is not None and not custom_rules.empty:
+        sub_rules = custom_rules[custom_rules['tx_type'] == int(tx_type)].copy()
+        if not sub_rules.empty:
+            sub_rules['_kw_len'] = sub_rules['keyword'].astype(str).str.len()
+            sub_rules = sub_rules.sort_values(by='_kw_len', ascending=False)
+            for _, rule in sub_rules.iterrows():
+                if keyword_matches_desc(rule['keyword'], desc):
+                    return int(rule['id_category'])
+    return get_category_id_v2(desc, tx_type)
+
 def clean_desc_v3(text):
     s = text
     for cutoff in ["rekening ini", "apabila nasabah", "laporan mutasi", "bca berhak", "bersambung ke", "halaman", "periode", "mata uang"]:
@@ -1893,6 +2080,7 @@ with tab1:
             # --- PROSES MUTASI BCA & KARTU KREDIT ---
             if uploaded_bank_files or uploaded_cc_files:
                 df_transact = load_or_seed_transact()
+                custom_rules_df = load_category_rules()
                 if not df_transact.empty:
                     df_transact['_id'] = pd.to_numeric(df_transact['_id'], errors='coerce').fillna(0).astype(int)
                     df_transact['date'] = pd.to_numeric(df_transact['date'], errors='coerce').fillna(0).astype('int64')
@@ -1970,7 +2158,7 @@ with tab1:
                             if timestamp_ms > max_stmt_ts:
                                 max_stmt_ts = timestamp_ms
                             desc = clean_desc_v3(b_str)
-                            cat_id = get_category_id_v2(desc, tx_type)
+                            cat_id = classify_transaction_category(desc, tx_type, custom_rules_df)
                             str_amount = str(int(round(amount)))
                             
                             key = (timestamp_ms, desc, str_amount, tx_type)
@@ -2049,7 +2237,7 @@ with tab1:
                                         if timestamp_ms > max_cc_ts:
                                             max_cc_ts = timestamp_ms
                                         cleaned_cc_desc = clean_desc_v3(desc)
-                                        cat_id = get_category_id_v2(cleaned_cc_desc, 0)
+                                        cat_id = classify_transaction_category(cleaned_cc_desc, 0, custom_rules_df)
                                         str_amount = str(int(round(amount)))
                                         
                                         key = (timestamp_ms, cleaned_cc_desc, str_amount, 0)
@@ -2222,6 +2410,9 @@ def render_dashboard():
     st.markdown(f"<p style='text-align: center; color: {sub_text}; font-size: 0.75rem; letter-spacing: 1px;'>[ FINANCIAL METRICS INTERFACE ]</p>", unsafe_allow_html=True)
     st.write("")
 
+    if 'cat_editor_rev' not in st.session_state:
+        st.session_state.cat_editor_rev = 0
+
     df = load_or_seed_transact()
     df_port_for_health = get_sheet_df("STOCK_PORTFOLIO", PORT_COLS)
 
@@ -2334,11 +2525,13 @@ def render_dashboard():
 
     st.divider()
     
-    cat_map = get_category_map()
+    catalog = get_category_catalog()
+    cat_map = catalog['id_to_name']
     
     if not df.empty:
+        df['_id'] = pd.to_numeric(df['_id'], errors='coerce').fillna(0).astype(int)
         df['id_category'] = pd.to_numeric(df['id_category'], errors='coerce').fillna(0).astype(int)
-        df['Kategori'] = df['id_category'].map(cat_map).fillna('Lainnya')
+        df['Kategori'] = df['id_category'].map(cat_map).fillna('Lain-lain')
         df['Deskripsi'] = df['desc'].astype(str)
         df['type'] = pd.to_numeric(df['type'], errors='coerce').fillna(0).astype(int)
         df['datetime'] = pd.to_datetime(pd.to_numeric(df['date'], errors='coerce'), unit='ms')
@@ -2391,13 +2584,200 @@ def render_dashboard():
             ).properties(height=300, background=chart_bg).configure_view(stroke=None).configure_axis(gridColor=chart_grid)
             
             st.altair_chart(chart, use_container_width=True)
-            st.markdown("<h4>Rincian Transaksi</h4>", unsafe_allow_html=True)
-            df_exp_disp = df_expense_mo.sort_values(by='datetime', ascending=False).copy()
-            df_exp_disp['Tanggal'] = df_exp_disp['datetime'].dt.strftime('%d/%m/%Y')
-            df_exp_disp['Jumlah (Rp)'] = df_exp_disp['Jumlah'].apply(fmt_int)
-            st.dataframe(df_exp_disp[['Tanggal', 'Kategori', 'Deskripsi', 'Jumlah (Rp)']], use_container_width=True, hide_index=True)
         else:
             st.info("Tidak ada data pengeluaran untuk periode ini.")
+
+        # --- TABEL INTERAKTIF KLASIFIKASI TRANSAKSI (PENGELUARAN & PEMASUKAN) ---
+        st.markdown("<h4>Rincian Transaksi & Ubah Kategori</h4>", unsafe_allow_html=True)
+        st.markdown(
+            f"<p style='text-align: center; color: {sub_text}; font-size: 0.82rem; margin-top: -0.25rem;'>"
+            "Klik kolom <b>Kategori</b> untuk mengubah klasifikasi. Perubahan otomatis memperbarui seluruh transaksi historis & disimpan sebagai referensi parser PDF berikutnya."
+            "</p>",
+            unsafe_allow_html=True
+        )
+
+        f_col1, f_col2 = st.columns([2, 1])
+        with f_col1:
+            tx_filter_mode = st.radio(
+                "Tampilkan Transaksi",
+                ["Pengeluaran", "Pemasukan", "Semua"],
+                horizontal=True,
+                key="dash_tx_type_filter"
+            )
+        with f_col2:
+            only_lain = st.checkbox("Hanya kategori 'Lain-lain'", value=False, key="dash_only_lain_filter")
+
+        df_edit_src = df_month.copy()
+        if tx_filter_mode == "Pengeluaran":
+            df_edit_src = df_edit_src[df_edit_src['type'] == 0]
+            dropdown_opts = catalog['expense_options']
+        elif tx_filter_mode == "Pemasukan":
+            df_edit_src = df_edit_src[df_edit_src['type'] == 1]
+            dropdown_opts = catalog['income_options']
+        else:
+            dropdown_opts = catalog['all_options']
+
+        if only_lain:
+            df_edit_src = df_edit_src[df_edit_src['Kategori'].str.lower() == 'lain-lain']
+
+        if not df_edit_src.empty:
+            df_edit_src = df_edit_src.sort_values(by='datetime', ascending=False).reset_index(drop=True)
+            df_editor_input = pd.DataFrame({
+                '_id': df_edit_src['_id'].astype(int),
+                'Tanggal': df_edit_src['datetime'].dt.strftime('%d/%m/%Y'),
+                'Jenis': df_edit_src['type'].map({0: 'Pengeluaran', 1: 'Pemasukan'}).fillna('Pengeluaran'),
+                'Kategori': df_edit_src['Kategori'],
+                'Deskripsi': df_edit_src['Deskripsi'],
+                'Jumlah (Rp)': df_edit_src['Jumlah'].apply(fmt_int),
+            })
+
+            editor_key = f"tx_cat_editor_{selected_year}_{selected_month}_{tx_filter_mode}_{only_lain}_{st.session_state.cat_editor_rev}"
+            edited_df = st.data_editor(
+                df_editor_input,
+                key=editor_key,
+                use_container_width=True,
+                hide_index=True,
+                disabled=['_id', 'Tanggal', 'Jenis', 'Deskripsi', 'Jumlah (Rp)'],
+                column_config={
+                    '_id': st.column_config.NumberColumn('ID', width='small'),
+                    'Tanggal': st.column_config.TextColumn('Tanggal', width='small'),
+                    'Jenis': st.column_config.TextColumn('Jenis', width='small'),
+                    'Kategori': st.column_config.SelectboxColumn(
+                        'Kategori',
+                        options=dropdown_opts,
+                        required=True,
+                        width='medium'
+                    ),
+                    'Deskripsi': st.column_config.TextColumn('Deskripsi', width='large'),
+                    'Jumlah (Rp)': st.column_config.TextColumn('Jumlah (Rp)', width='small'),
+                }
+            )
+
+            if st.button("Simpan Perubahan Kategori & Jadikan Aturan Otomatis", type="primary", use_container_width=True):
+                changed_rules = []
+                direct_updates = {}
+                for idx in range(len(df_editor_input)):
+                    old_cat = str(df_editor_input.loc[idx, 'Kategori']).strip()
+                    new_cat = str(edited_df.loc[idx, 'Kategori']).strip()
+                    if old_cat != new_cat and new_cat:
+                        tx_id = int(df_editor_input.loc[idx, '_id'])
+                        tx_t = 1 if df_editor_input.loc[idx, 'Jenis'] == 'Pemasukan' else 0
+                        desc_val = str(df_editor_input.loc[idx, 'Deskripsi'])
+                        target_cat_id = resolve_category_id(new_cat, tx_t, catalog)
+                        kw = suggest_rule_keyword(desc_val)
+
+                        direct_updates[tx_id] = target_cat_id
+                        changed_rules.append({
+                            'keyword': kw,
+                            'tx_type': tx_t,
+                            'id_category': target_cat_id,
+                            'category_name': new_cat,
+                        })
+
+                if changed_rules:
+                    with st.spinner("Menyimpan aturan & memperbarui seluruh transaksi historis..."):
+                        _, affected_rows = upsert_rules_and_apply_retroactive(
+                            df[['_id', 'id_category', 'desc', 'type', 'date', 'amount']],
+                            changed_rules,
+                            direct_id_updates=direct_updates
+                        )
+                        st.session_state.cat_editor_rev += 1
+                        st.success(f"{len(changed_rules)} aturan disimpan & {fmt_int(affected_rows)} transaksi diperbarui!")
+                        st.rerun()
+                else:
+                    st.info("Belum ada perubahan kategori pada tabel di atas.")
+        else:
+            st.info("Tidak ada transaksi yang cocok dengan filter saat ini.")
+
+        # --- PANEL KELOLA ATURAN KUSTOM (SELF-LEARNING RULES) ---
+        df_rules_curr = load_category_rules()
+        with st.expander(f"Kelola Aturan Kategori Otomatis ({len(df_rules_curr)} aturan aktif)"):
+            st.markdown(
+                f"<p style='color: {sub_text}; font-size: 0.83rem;'>"
+                "Tambah kata kunci kustom atau sesuaikan kata kunci yang sudah tersimpan (misalnya mempersingkat nama merchant agar mencakup semua cabang)."
+                "</p>",
+                unsafe_allow_html=True
+            )
+            with st.form("form_add_custom_rule"):
+                r_col1, r_col2, r_col3 = st.columns([1.2, 2, 1.5])
+                with r_col1:
+                    rule_type_label = st.selectbox("Jenis Transaksi", ["Pengeluaran", "Pemasukan"])
+                with r_col2:
+                    rule_kw_input = st.text_input("Kata Kunci Deskripsi", placeholder="contoh: kopi kenangan / artax / grab")
+                with r_col3:
+                    rule_cat_choice = st.selectbox("Kategori Tujuan", catalog['all_options'])
+
+                if st.form_submit_button("Simpan Aturan & Terapkan ke Semua Histori", type="primary", use_container_width=True):
+                    clean_kw = str(rule_kw_input or '').strip().lower()
+                    if len(clean_kw) < 2:
+                        st.error("Kata kunci minimal 2 karakter.")
+                    else:
+                        tx_t_val = 1 if rule_type_label == "Pemasukan" else 0
+                        target_cid = resolve_category_id(rule_cat_choice, tx_t_val, catalog)
+                        _, affected_rows = upsert_rules_and_apply_retroactive(
+                            df[['_id', 'id_category', 'desc', 'type', 'date', 'amount']],
+                            [{
+                                'keyword': clean_kw,
+                                'tx_type': tx_t_val,
+                                'id_category': target_cid,
+                                'category_name': rule_cat_choice,
+                            }]
+                        )
+                        st.session_state.cat_editor_rev += 1
+                        st.success(f"Aturan '{clean_kw}' -> '{rule_cat_choice}' disimpan ({fmt_int(affected_rows)} transaksi diperbarui)!")
+                        st.rerun()
+
+            if not df_rules_curr.empty:
+                st.markdown("**Daftar Aturan Tersimpan (Edit atau Hapus Baris):**")
+                rules_disp = pd.DataFrame({
+                    'Kata Kunci': df_rules_curr['keyword'],
+                    'Jenis': df_rules_curr['tx_type'].map({0: 'Pengeluaran', 1: 'Pemasukan'}).fillna('Pengeluaran'),
+                    'Kategori': df_rules_curr['category_name'],
+                    'Diperbarui': df_rules_curr['updated_at'],
+                })
+                edited_rules_df = st.data_editor(
+                    rules_disp,
+                    key=f"rules_manager_editor_{st.session_state.cat_editor_rev}",
+                    use_container_width=True,
+                    hide_index=True,
+                    num_rows="dynamic",
+                    disabled=['Diperbarui'],
+                    column_config={
+                        'Kata Kunci': st.column_config.TextColumn('Kata Kunci', required=True),
+                        'Jenis': st.column_config.SelectboxColumn('Jenis', options=['Pengeluaran', 'Pemasukan'], required=True),
+                        'Kategori': st.column_config.SelectboxColumn('Kategori', options=catalog['all_options'], required=True),
+                        'Diperbarui': st.column_config.TextColumn('Diperbarui'),
+                    }
+                )
+                if st.button("Simpan Perubahan Daftar Aturan", use_container_width=True):
+                    now_wib = datetime.datetime.now(WIB_TZ).strftime("%d/%m/%Y %H:%M WIB")
+                    rebuilt_rows = []
+                    for _, r in edited_rules_df.iterrows():
+                        kw_clean = str(r.get('Kata Kunci', '')).strip().lower()
+                        if not kw_clean or kw_clean == 'none':
+                            continue
+                        tx_t_val = 1 if str(r.get('Jenis', '')) == 'Pemasukan' else 0
+                        cat_nm = str(r.get('Kategori', '')).strip()
+                        cid = resolve_category_id(cat_nm, tx_t_val, catalog)
+                        rebuilt_rows.append({
+                            'keyword': kw_clean,
+                            'tx_type': tx_t_val,
+                            'id_category': cid,
+                            'category_name': cat_nm,
+                            'updated_at': str(r.get('Diperbarui') or now_wib),
+                        })
+                    new_rules_df = pd.DataFrame(rebuilt_rows, columns=RULES_COLS)
+                    save_category_rules(new_rules_df)
+                    if rebuilt_rows:
+                        _, affected_rows = upsert_rules_and_apply_retroactive(
+                            df[['_id', 'id_category', 'desc', 'type', 'date', 'amount']],
+                            rebuilt_rows
+                        )
+                        st.success(f"Daftar aturan diperbarui & {fmt_int(affected_rows)} transaksi historis disinkronkan!")
+                    else:
+                        st.success("Semua aturan kustom berhasil dihapus.")
+                    st.session_state.cat_editor_rev += 1
+                    st.rerun()
     else:
         st.info("Silakan lakukan sinkronisasi data di Tab Konversi PDF.")
 
