@@ -1,19 +1,36 @@
-# ConvertRK Cloud Fix
+# Financial Dashboard — Personal Finance, Cash Flow & Investments
 
-Patch dari ConvertRK Multi-Bank untuk Streamlit Community Cloud.
+Aplikasi web berbasis **Streamlit** untuk mengonversi laporan keuangan PDF (Rekening Koran BCA, Billing Kartu Kredit BCA, dan Statement of Account / Tax Report Stockbit) menjadi database terstruktur di **Google Sheets** dan file backup SQLite (`.ckbak` & `.db`), lengkap dengan analisis arus kas, kesehatan likuiditas, serta performa portofolio saham.
 
-## Perubahan
-- Identifikasi BCA tidak lagi hanya bergantung pada frasa persis `REKENING GIRO` + `MUTASI`; mengenali indikasi `REKENING TAHAPAN`, `TAHAPAN BCA`, dan header BCA lain.
-- Mengerti bulan/tahun dari nama file `JAN_2022.pdf` atau `JANUARI-2022.pdf` bila periode header tidak terbaca.
-- Jika PDF gagal diproses, tampilkan diagnostik versi Python/pdfplumber, jumlah halaman, jumlah karakter teks, format bank yang terdeteksi, dan indikator umum (tanpa isi transaksi).
-- `pdfplumber==0.11.9` disamakan dengan environment pengujian; `packages.txt` tetap memakai Poppler yang dibutuhkan untuk parsing Permata cepat.
-- Format Excel asli, 1 sheet GL dan logika saldo tetap sama.
+---
 
-## Memperbarui GitHub
-1. Ganti `app.py`, `multi_bank_parser.py`, `requirements.txt`, `packages.txt`, dan `Bank_template.xlsx` di root repository GitHub yang digunakan Streamlit. Jangan upload PDF berisi data rahasia ke repository GitHub.
-2. Commit ke branch yang benar (umumnya `main`).
-3. Streamlit Community Cloud > Manage app > Reboot app; jalankan tes PDF yang sama di lokal dan Cloud.
-4. Jika masih gagal, salin hasil diagnostik teknis, terutama "Bank terbaca", "Karakter teks halaman 1", dan `pdfplumber`.
+## Fitur Utama
 
-## Batasan
-Parser khusus BCA masih bergantung pada lokasi kolom seperti pada contoh BCA Januari 2026. Jika PDF BCA 2022 memakai layout transaksi lain, patch ini **belum tentu** dapat mengonversinya. PDF 2022 yang menimbulkan masalah tidak tersedia untuk diuji, sehingga jangan gunakan output tanpa memeriksa saldo dan jumlah transaksi.
+### 1. Konversi & Sinkronisasi PDF (`Konversi PDF`)
+* **Rekening Koran BCA:** Ekstraksi otomatis mutasi debit/kredit, pembersihan deskripsi transaksi, deteksi duplikat, serta pembacaan `SALDO AKHIR` terbaru.
+* **Billing Kartu Kredit BCA:** Mendukung file PDF terproteksi *password*, menyaring baris pembayaran/cicilan berjalan agar tidak tercatat ganda, serta membaca `TOTAL TAGIHAN`.
+* **Stockbit SoA & Annual Tax Report:** Ekstraksi kepemilikan saham bulanan, `Equity NAB`, riwayat transaksi harian (beli/jual saham, obligasi, bunga obligasi), serta riwayat dividen tahunan.
+* **Export Database Lokal:**
+  * `CK(dd-mm-yyyy-HHMMSS).ckbak` — File backup SQLite yang dioptimasi (`VACUUM`, `REINDEX`, `journal_mode=DELETE`) agar siap langsung di-restore ke aplikasi Android **Catatan Keuangan**.
+  * `INV(dd-mm-yyyy-HHMMSS).db` — File database SQLite untuk data portofolio dan transaksi investasi.
+
+### 2. Analisis Cashflow & Kesehatan Pinjaman (`Dashboard`)
+* **Posisi Aktual Cash & Diagnosa Likuiditas:** Menghitung selisih `Saldo Akhir BCA − Limit CC Terpakai` dan mengevaluasi kesehatan pinjaman melalui 4 indikator: *Cash Coverage Ratio*, *Credit Utilization Ratio (CUR)*, *Eksposur CC terhadap Pemasukan*, dan *Net Liquid Worth* (kas bersih + ekuitas portofolio).
+* **Ringkasan Arus Kas Tahunan & Bulanan:** Metrik total pemasukan, pengeluaran, *net cashflow*, serta grafik batang pengeluaran per kategori.
+* **Filter & Pengurutan ala Excel:** Filter transaksi berdasarkan cakupan waktu (bulan/tahun/semua waktu), jenis transaksi (pengeluaran/pemasukan), multi-pilih kategori, pencarian kata kunci deskripsi, serta pengurutan nominal terbesar–terkecil atau tanggal.
+* **Self-Learning Category Rules (`CATEGORY_RULES`):** Perubahan kategori transaksi langsung di tabel otomatis disimpan sebagai aturan kata kunci di Google Sheets, diterapkan secara retroaktif ke seluruh data historis, dan digunakan sebagai prioritas utama saat memproses PDF berikutnya.
+
+### 3. Pelacakan Portofolio Investasi (`Investasi`)
+* **Metrik Kinerja Portofolio:** Menghitung *Total Modal*, *Total Aset*, *Unrealized P/L*, *Total Dividen*, **XIRR** (berbasis arus kas RDN dari mutasi BCA dan `Equity NAB`), serta **CAGR**.
+* **Visualisasi Interaktif:** Grafik donat alokasi aset per emiten, tabel performa per saham, log transaksi harian, grafik perbandingan *Market Value vs Buying Value*, dan grafik historis *Portfolio Return vs XIRR (%)*.
+
+---
+
+## Struktur Repositori
+
+```text
+catatankeuangan/
+├── app.py              # Aplikasi utama Streamlit (Parser PDF, Dashboard Cashflow & Investasi)
+├── requirements.txt    # Daftar dependensi Python
+├── packages.txt        # Dependensi sistem (opsional)
+└── README.md           # Dokumentasi proyek
