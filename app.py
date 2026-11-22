@@ -152,6 +152,24 @@ st.markdown(f"""
         margin-top: 1.1rem;
     }}
 
+    .filter-summary-bar {{
+        background: {tab_bg};
+        border: 1px solid {border_color};
+        border-radius: 10px;
+        padding: 8px 14px;
+        margin: 0.35rem 0 0.65rem 0;
+        font-size: 0.84rem;
+        color: {sub_text} !important;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+    }}
+    .filter-summary-bar strong {{
+        color: {text_color} !important;
+    }}
+
     .health-diagnosis-card {{
         background: {card_bg};
         border: 1px solid {border_color};
@@ -662,14 +680,12 @@ def get_category_catalog():
     for cid, cname, ctype in rows:
         id_to_name[cid] = cname
         if ctype == 1:
-            # Prioritaskan ID 3 untuk Gaji agar konsisten dengan get_category_id_v2
             if cname not in income_name_to_id or cid == 3:
                 income_name_to_id[cname] = cid
         else:
             if cname not in expense_name_to_id:
                 expense_name_to_id[cname] = cid
 
-    # Investasi (42) dipakai untuk aliran masuk & keluar RDN/Stockbit
     if 'Investasi' not in income_name_to_id and 'Investasi' in expense_name_to_id:
         income_name_to_id['Investasi'] = expense_name_to_id['Investasi']
 
@@ -718,7 +734,6 @@ def suggest_rule_keyword(desc):
         clean_tok = tok.strip(".,-_:;()[]{}/\\")
         if not clean_tok:
             continue
-        # Buang kode referensi alfanumerik acak (misal: 261115abc123)
         if len(clean_tok) >= 6 and any(c.isdigit() for c in clean_tok) and any(c.isalpha() for c in clean_tok):
             continue
         if clean_tok in stop_tokens:
@@ -801,12 +816,10 @@ def upsert_rules_and_apply_retroactive(df_transact, rule_items, direct_id_update
     df_updated['id_category'] = pd.to_numeric(df_updated['id_category'], errors='coerce').fillna(0).astype(int)
     orig_cats = df_updated['id_category'].copy()
 
-    # 1. Terapkan update langsung pada baris yang diedit secara eksplisit
     if direct_id_updates:
         for tx_id, target_cat_id in direct_id_updates.items():
             df_updated.loc[df_updated['_id'] == int(tx_id), 'id_category'] = int(target_cat_id)
 
-    # 2. Terapkan retroaktif otomatis untuk semua transaksi dengan kata kunci yang sama
     for r in new_rule_rows:
         kw = r['keyword']
         tx_t = r['tx_type']
@@ -881,7 +894,6 @@ def analyze_loan_health(saldo_bca, limit_used, limit_plafon, df_transact, df_por
     aktual_cash = saldo_bca - limit_used
     sisa_limit = max(0.0, limit_plafon - limit_used)
 
-    # 1. Cash Coverage Ratio (Likuiditas Jangka Pendek)
     if limit_used <= 0:
         coverage_pct = 100.0
         coverage_status = "Likuid Penuh"
@@ -898,7 +910,6 @@ def analyze_loan_health(saldo_bca, limit_used, limit_plafon, df_transact, df_por
             coverage_status = "Defisit Likuiditas Tunai"
             coverage_color = "inverse"
 
-    # 2. Credit Utilization Ratio / CUR (Kapasitas Kredit FICO / SLIK)
     cur_pct = (limit_used / limit_plafon) * 100.0
     if cur_pct <= 30.0:
         cur_status = "Sehat (≤ 30%)"
@@ -913,7 +924,6 @@ def analyze_loan_health(saldo_bca, limit_used, limit_plafon, df_transact, df_por
         cur_status = "Kritis (> 80% Limit)"
         cur_color = "inverse"
 
-    # 3. Debt-to-Income Exposure (Kapasitas Arus Kas CFP dari data TRANSACT)
     avg_monthly_income = 0.0
     if not df_transact.empty:
         df_inc = df_transact.copy()
@@ -944,7 +954,6 @@ def analyze_loan_health(saldo_bca, limit_used, limit_plafon, df_transact, df_por
         dti_status = "Data Income Kosong"
         dti_color = "off"
 
-    # 4. Balance Sheet Solvency / Net Liquid Worth (Solvabilitas Neraca Pribadi)
     latest_equity = 0.0
     latest_period_label = "-"
     if not df_port.empty:
@@ -2587,27 +2596,73 @@ def render_dashboard():
         else:
             st.info("Tidak ada data pengeluaran untuk periode ini.")
 
-        # --- TABEL INTERAKTIF KLASIFIKASI TRANSAKSI (PENGELUARAN & PEMASUKAN) ---
+        # --- TABEL INTERAKTIF KLASIFIKASI TRANSAKSI (FILTER & SORT ALA EXCEL) ---
         st.markdown("<h4>Rincian Transaksi & Ubah Kategori</h4>", unsafe_allow_html=True)
         st.markdown(
             f"<p style='text-align: center; color: {sub_text}; font-size: 0.82rem; margin-top: -0.25rem;'>"
-            "Klik kolom <b>Kategori</b> untuk mengubah klasifikasi. Perubahan otomatis memperbarui seluruh transaksi historis & disimpan sebagai referensi parser PDF berikutnya."
+            "Filter berdasarkan jenis, kategori, atau kata kunci keterangan, lalu klik kolom <b>Kategori</b> untuk mengubah klasifikasi & menyimpannya sebagai aturan otomatis."
             "</p>",
             unsafe_allow_html=True
         )
 
-        f_col1, f_col2 = st.columns([2, 1])
-        with f_col1:
-            tx_filter_mode = st.radio(
-                "Tampilkan Transaksi",
-                ["Pengeluaran", "Pemasukan", "Semua"],
-                horizontal=True,
+        f_r1_c1, f_r1_c2, f_r1_c3 = st.columns([1.25, 1.15, 1.4])
+        with f_r1_c1:
+            scope_label_mo = f"Bulan Terpilih ({months_dict.get(selected_month)} {selected_year})"
+            scope_label_yr = f"Semua Bulan ({selected_year})"
+            scope_label_all = "Semua Waktu"
+            scope_mode = st.selectbox(
+                "Cakupan Waktu",
+                [scope_label_mo, scope_label_yr, scope_label_all],
+                key="dash_tx_scope_filter"
+            )
+        with f_r1_c2:
+            tx_filter_mode = st.selectbox(
+                "Filter Jenis",
+                ["Semua", "Pengeluaran", "Pemasukan"],
                 key="dash_tx_type_filter"
             )
-        with f_col2:
-            only_lain = st.checkbox("Hanya kategori 'Lain-lain'", value=False, key="dash_only_lain_filter")
+        with f_r1_c3:
+            sort_mode = st.selectbox(
+                "Urutkan Data",
+                [
+                    "Tanggal (Terbaru → Terlama)",
+                    "Tanggal (Terlama → Terbaru)",
+                    "Jumlah (Terbesar → Terkecil)",
+                    "Jumlah (Terkecil → Terbesar)",
+                    "Keterangan (A → Z)",
+                    "Kategori (A → Z)",
+                ],
+                key="dash_tx_sort_mode"
+            )
 
-        df_edit_src = df_month.copy()
+        f_r2_c1, f_r2_c2 = st.columns([1.35, 1.65])
+        with f_r2_c1:
+            selected_cats = st.multiselect(
+                "Filter Kategori (Ketik / pilih lebih dari satu)",
+                options=catalog['all_options'],
+                default=[],
+                placeholder="Semua Kategori...",
+                key="dash_tx_cat_multiselect"
+            )
+        with f_r2_c2:
+            desc_query = st.text_input(
+                "Cari Keterangan / Deskripsi",
+                value="",
+                placeholder="Ketik kata kunci keterangan (misal: qris, grab, artax, kopi)...",
+                key="dash_tx_desc_search"
+            )
+
+        # 1. Cakupan waktu
+        if scope_mode == scope_label_all:
+            df_edit_src = df.copy()
+        elif scope_mode == scope_label_yr:
+            df_edit_src = df_year.copy()
+        else:
+            df_edit_src = df_month.copy()
+
+        total_scope_rows = len(df_edit_src)
+
+        # 2. Filter Jenis Transaksi
         if tx_filter_mode == "Pengeluaran":
             df_edit_src = df_edit_src[df_edit_src['type'] == 0]
             dropdown_opts = catalog['expense_options']
@@ -2617,11 +2672,53 @@ def render_dashboard():
         else:
             dropdown_opts = catalog['all_options']
 
-        if only_lain:
-            df_edit_src = df_edit_src[df_edit_src['Kategori'].str.lower() == 'lain-lain']
+        # 3. Filter Kategori (Multi-select seperti Excel)
+        if selected_cats:
+            df_edit_src = df_edit_src[df_edit_src['Kategori'].isin(selected_cats)]
+
+        # 4. Filter Pencarian Keterangan / Deskripsi
+        clean_desc_q = desc_query.strip().lower()
+        if clean_desc_q:
+            df_edit_src = df_edit_src[
+                df_edit_src['Deskripsi'].str.lower().str.contains(clean_desc_q, regex=False, na=False)
+            ]
+
+        # 5. Pengurutan (Sorting)
+        if not df_edit_src.empty:
+            if sort_mode == "Tanggal (Terlama → Terbaru)":
+                df_edit_src = df_edit_src.sort_values(by=['datetime', '_id'], ascending=[True, True])
+            elif sort_mode == "Jumlah (Terbesar → Terkecil)":
+                df_edit_src = df_edit_src.sort_values(by=['Jumlah', 'datetime'], ascending=[False, False])
+            elif sort_mode == "Jumlah (Terkecil → Terbesar)":
+                df_edit_src = df_edit_src.sort_values(by=['Jumlah', 'datetime'], ascending=[True, False])
+            elif sort_mode == "Keterangan (A → Z)":
+                df_edit_src = df_edit_src.sort_values(
+                    by=['Deskripsi', 'datetime'],
+                    ascending=[True, False],
+                    key=lambda col: col.str.lower() if col.name == 'Deskripsi' else col
+                )
+            elif sort_mode == "Kategori (A → Z)":
+                df_edit_src = df_edit_src.sort_values(
+                    by=['Kategori', 'datetime'],
+                    ascending=[True, False],
+                    key=lambda col: col.str.lower() if col.name == 'Kategori' else col
+                )
+            else:
+                df_edit_src = df_edit_src.sort_values(by=['datetime', '_id'], ascending=[False, False])
+
+        filtered_sum = float(df_edit_src['Jumlah'].sum()) if not df_edit_src.empty else 0.0
+        st.markdown(
+            f"""
+            <div class="filter-summary-bar">
+                <span>Menampilkan <strong>{fmt_int(len(df_edit_src))}</strong> dari <strong>{fmt_int(total_scope_rows)}</strong> transaksi</span>
+                <span>Total Nominal Hasil Filter: <strong>{fmt_rp(filtered_sum)}</strong></span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
         if not df_edit_src.empty:
-            df_edit_src = df_edit_src.sort_values(by='datetime', ascending=False).reset_index(drop=True)
+            df_edit_src = df_edit_src.reset_index(drop=True)
             df_editor_input = pd.DataFrame({
                 '_id': df_edit_src['_id'].astype(int),
                 'Tanggal': df_edit_src['datetime'].dt.strftime('%d/%m/%Y'),
@@ -2631,7 +2728,11 @@ def render_dashboard():
                 'Jumlah (Rp)': df_edit_src['Jumlah'].apply(fmt_int),
             })
 
-            editor_key = f"tx_cat_editor_{selected_year}_{selected_month}_{tx_filter_mode}_{only_lain}_{st.session_state.cat_editor_rev}"
+            cat_sig = "_".join(sorted(selected_cats)) if selected_cats else "ALL"
+            editor_key = (
+                f"tx_cat_editor_{selected_year}_{selected_month}_{scope_mode}_"
+                f"{tx_filter_mode}_{cat_sig}_{clean_desc_q}_{sort_mode}_{st.session_state.cat_editor_rev}"
+            )
             edited_df = st.data_editor(
                 df_editor_input,
                 key=editor_key,
